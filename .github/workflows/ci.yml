@@ -206,7 +206,7 @@ jobs:
       # Informational: reports fixable HIGH/CRITICAL CVEs without blocking the build
       # (base-image CVEs appear upstream without any change from us). See README.
       - name: Vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.IMAGE_LOCAL }}
           severity: HIGH,CRITICAL
