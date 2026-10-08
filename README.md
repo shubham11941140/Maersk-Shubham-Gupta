@@ -64,6 +64,11 @@ python -m app
 python -m assistant
 ```
 
+## GitHub CI Actions
+**Run all CI Pipelines for all 3 parts on GitHub and they are 3 running successfully**
+
+<img width="1377" height="297" alt="image" src="https://github.com/user-attachments/assets/66d784d8-8558-4fdc-9a14-5c168a02814d" />
+
 ---
 
 ## Architecture diagram
