@@ -1,47 +1,71 @@
-# Manual, paid evaluation of the GenAI assistant against the REAL Claude API.
-# Regular CI never calls an LLM (tests use a scripted fake, so they are free and deterministic).
-#
-# Setup: Settings → Secrets and variables → Actions → New repository secret → ANTHROPIC_API_KEY
-# Run:   Actions → LLM eval → Run workflow
 
-name: LLM eval
+# Manual, paid evaluation of the GenAI assistant against the REAL OpenAI API.
+# Regular CI uses scripted fake responses, so it remains free and deterministic.
+#
+# Setup:
+# GitHub → Settings → Secrets and variables → Actions
+# → New repository secret → OPENAI_API_KEY
+#
+# Run:
+# GitHub → Actions → LLM eval (OpenAI) → Run workflow
+
+name: LLM eval (OpenAI)
 
 on:
   workflow_dispatch:
     inputs:
       model:
-        description: "Claude model id"
-        default: "claude-haiku-5-5"
+        description: "OpenAI model ID"
+        default: "gpt-4.1-mini"
         required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   live-assistant-tests:
-    name: Assistant vs real Claude (${{ inputs.model }})
+    name: Assistant vs OpenAI (${{ inputs.model }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SCI_ASSISTANT_MODEL: ${{ inputs.model }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements*.txt
-      - run: pip install -r requirements-dev.txt
-      - name: Fail early if the secret is missing
-        run: test -n "$ANTHROPIC_API_KEY" || { echo "::error::Add the ANTHROPIC_API_KEY repository secret"; exit 1; }
-      # The fixture builds the warehouse and starts the real API; the tests ask the brief's questions.
-      - name: pytest -m live_llm
-        run: pytest -m live_llm -v --junitxml=junit-llm.xml
-      - uses: actions/upload-artifact@v4
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install openai
+
+      - name: Fail early if OpenAI key is missing
+        run: |
+          test -n "$OPENAI_API_KEY" || {
+            echo "::error::Add the OPENAI_API_KEY repository secret"
+            exit 1
+          }
+
+      - name: Run live OpenAI evaluation
+        run: |
+          pytest -m live_llm -v --junitxml=junit-llm.xml
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: llm-eval
+          name: openai-llm-eval
           path: |
             junit-llm.xml
             /tmp/pytest-of-*/**/assistant-*.jsonl
