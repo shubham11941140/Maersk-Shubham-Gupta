@@ -2,13 +2,16 @@
 
 [![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
 
-A thin, end-to-end slice of a supply-chain intelligence platform. It covers data-quality checks on raw shipping data, a layered DuckDB warehouse, a booking-time delay-risk model, and a production-style REST API over all of it.
+A thin, end-to-end slice of a supply-chain intelligence platform. It covers data-quality checks on raw shipping data, a layered DuckDB warehouse, a booking-time delay-risk model, a production-style REST API over all of it, and a tool-calling GenAI assistant on top.
 
-**Stack:** Python 3.12 · **FastAPI** + Uvicorn · DuckDB · scikit-learn · pytest · Ruff · Docker / Docker Compose · GitHub Actions + GHCR
+**Stack:** Python 3.12 · **FastAPI** + Uvicorn · DuckDB · scikit-learn · **Claude (Anthropic API)** · pytest · Ruff · Docker / Docker Compose · GitHub Actions + GHCR
 
-> **Status.** This drop delivers Part 1 (1.1 API service, 1.2 testing, 1.3 containerisation, 1.4 CI/CD Option A, 1.5 runbook) and Part 2 (2.1 standalone data-quality checks, 2.2 tech choices, 2.3 layered, idempotent, contract-validated pipeline) of the brief.
-> The delay model is a working baseline; Part 3 deepens it and adds the GenAI assistant.
-> README sections still to come with Part 3: If I had more time, Scaling to production.
+> **Status: all three parts of the brief are delivered.**
+> - **Part 1:** API, tests, containers, CI/CD (Option A) and runbook.
+> - **Part 2:** standalone DQ checks, tech choices, and a layered, idempotent, contract-validated pipeline.
+> - **Part 3:** a leakage-free delay model with honest evaluation and a monitoring job, and a tool-calling Claude assistant with guardrails and full LLM logging.
+>
+> All eight required README sections are present: [Getting started](#getting-started), [Architecture diagram](#architecture-diagram), [Tech choices](#tech-choices), [Data quality summary](#data-quality-summary), [Production support runbook](#production-support-runbook), [CI/CD](#cicd), [If I had more time](#if-i-had-more-time) and [Scaling to production](#scaling-to-production).
 
 ---
 
@@ -43,7 +46,11 @@ make docker-test     # = docker compose --profile test run --rm integration-test
 python3.12 -m venv .venv && source .venv/bin/activate
 make install         # runtime + dev deps
 make run             # DQ checks -> pipeline -> API on :8000
-make test            # 179 tests: unit + integration, with coverage
+make test            # 246 tests (+4 live-LLM tests, skipped without a key): unit + integration, with coverage
+
+# GenAI assistant (needs the API running and an Anthropic key)
+export ANTHROPIC_API_KEY=sk-ant-...
+make assistant       # interactive; or: python -m assistant ask "..." · make assistant-demo
 ```
 
 The `Makefile` targets are thin wrappers, so every step is also runnable directly:
@@ -52,7 +59,9 @@ The `Makefile` targets are thin wrappers, so every step is also runnable directl
 python -m dq --input ./data/raw --output ./artifacts/dq_report.json     # or: python dq_check.py --input ./data/raw
 python -m pipeline --input ./data/raw --db ./data/warehouse/supply_chain.duckdb
 python -m ml.train                                                      # optional: model artefact is committed
+python -m ml.monitor --last-days 90                                     # drift + performance + retrain decision
 python -m app
+python -m assistant
 ```
 
 ---
@@ -77,7 +86,9 @@ flowchart LR
         C --> SV[serving.*<br/>route_stats, port_daily_activity]
     end
 
-    WH -->|"python -m ml.train"| M[(artifacts/model<br/>joblib + metadata + sha256)]
+    WH -->|"python -m ml.train<br/>(CV, candidates, permutation test)"| M[(artifacts/model<br/>joblib + metadata + sha256<br/>+ monitoring reference)]
+    M --> MON["python -m ml.monitor<br/>PSI drift · live perf · retrain decision"]
+    WH --> MON
 
     subgraph API["FastAPI service"]
         direction TB
@@ -90,6 +101,15 @@ flowchart LR
     M -. loaded once at startup .-> PRED
     DQ -. mtime-cached .-> SVC
     Client((HTTP client)) --> MW --> RT
+
+    subgraph GENAI["GenAI assistant (python -m assistant)"]
+        direction TB
+        CLI[CLI] --> AG["Agent loop<br/>guardrails: input · scope · budgets · grounding"]
+        AG <--> LLM[["Claude Haiku 5.5<br/>(Anthropic API, tool use)"]]
+        AG --> TR["Tool registry<br/>query_shipments · get_route_stats<br/>rank_routes · predict_delay"]
+        AG --> LOG[(logs/assistant/*.jsonl<br/>every LLM + tool call)]
+    end
+    TR -->|HTTP| MW
 ```
 
 ### Docker Compose topology
@@ -101,6 +121,7 @@ flowchart LR
     pipeline -. "service_completed_successfully" .-> api
     tests["integration-tests<br/>(profile: test)"] -->|HTTP| api
     api -. "service_healthy" .-> tests
+    asst["assistant<br/>(profile: assistant)"] -->|HTTP| api
 ```
 
 ---
@@ -114,6 +135,8 @@ flowchart LR
 | `GET` | `/shipments/{id}` | Full details for one shipment, including port details and the DQ flags applied to that row. | `200` · `404 SHIPMENT_NOT_FOUND` |
 | `GET` | `/shipments` | List with filters and pagination. | `200` · `422` |
 | `GET` | `/routes/{origin}/{destination}/stats` | Average, median and p90 delay; on-time rate; counts. Optional date range. | `200` · `404 PORT_NOT_FOUND` · `422` |
+| `GET` | `/routes/rankings` | Routes ranked by `avg_delay_hours`, `on_time_rate`, `completed_count` or `shipment_count` for a quarter. `period=latest` (the default) resolves to the latest *complete* quarter; `all` and `2025-Q3` are also accepted. Small samples are excluded via `min_completed`. | `200` · `422` (unknown period) |
+| `GET` | `/ports` | Port reference data (code, name, country, region, congestion) | `200` |
 | `POST` | `/predict-delay` | Delay-risk prediction from booking-time features. | `200` · `404` · `422` · `503` (model not loaded) |
 | `GET` | `/data-quality/report` | The JSON written by the standalone DQ module. Filterable. | `200` · `503` (report not generated) |
 
@@ -205,8 +228,22 @@ pipeline/                    raw -> ref -> curated/quarantine -> serving -> cont
   sql.py / build.py          layer SQL · orchestration, Parquet export
   validate.py                20-rule post-build data contract
   fingerprint.py             content fingerprint (idempotency proof)
-docs/                        generated DQ report, data dictionary
-ml/                          shared feature engineering, training, serving-side predictor
+docs/                        generated DQ report, data dictionary, model card
+ml/                          delay model
+  features.py                booking-time features (+ why each exists / is excluded), shared train & serve
+  history_features.py        point-in-time history features (experiment, not shipped)
+  evaluation.py              rolling-origin CV, bootstrap CIs, permutation test, calibration
+  train.py                   candidates, selection rule, final test, artefact + metadata
+  predictor.py               serving-side loader (sha256-verified)
+  monitoring.py / monitor.py PSI drift, live performance, retrain decision · CLI job
+  model_card.py              renders docs/MODEL_CARD.md
+assistant/                   GenAI assistant
+  agent.py                   LLM ⇄ tools loop with guardrails
+  tools.py                   4 validated, read-only tools over the API (source ids for citations)
+  guardrails.py              input · scope · budget · grounding checks
+  llm.py                     LLMClient protocol + Anthropic adapter
+  prompts.py / pricing.py    system prompt (ports + data coverage) · cost per call
+  observability.py           JSONL log of every LLM call, tool call, guardrail event, turn
 shared/                      domain rules used by all of the above (on-time threshold, canonical values)
 tests/unit/                  ms-fast tests with fakes; no files, DB or network
 tests/integration/           real HTTP against a real running service + pipeline on the real files
@@ -222,6 +259,8 @@ tests/integration/           real HTTP against a real running service + pipeline
 | **Registry** | `dq/checks.py` `@register` | Adding a DQ check is one decorated function. The runner, report and API pick it up automatically. |
 | **Single source of truth for domain rules** | `shared/reference.py` | The 24-hour on-time rule and the canonical statuses and cargo types are shared by DQ, SQL, ML and API. The pipeline loads them into `ref.*` tables. |
 | **Graceful degradation** | lifespan + `/health` | A missing model or DB doesn't crash-loop the pod. `/health` returns 503 naming the broken dependency, and only the affected endpoints return 503. |
+| **Strategy / adapter** | `LLMClient` Protocol, `AnthropicLLM`, `ScriptedLLM` in tests | The agent loop is provider-agnostic, and every guardrail path is tested deterministically without an API key. |
+| **Interface segregation** | `AnalyticsRepository` alongside `ShipmentRepository` | Consumers of rankings and ports (such as the assistant's tools) depend on a small interface. |
 
 ### Notable engineering decisions
 
@@ -236,8 +275,9 @@ tests/integration/           real HTTP against a real running service + pipeline
 ## Testing
 
 ```bash
-make test-unit          # 151 tests, ~6 s, no infrastructure (the pipeline-rule tests use in-process DuckDB)
-make test-integration   # 28 tests, ~12 s, real HTTP against a real uvicorn process + pipeline on the real files
+make test-unit          # 203 tests, ~6 s, no infrastructure (the pipeline-rule tests use in-process DuckDB)
+make test-integration   # 43 tests, ~15 s, real HTTP against a real uvicorn process + pipeline/ML on the real files
+pytest -m live_llm      # 4 optional tests against the real Claude API (skipped unless ANTHROPIC_API_KEY is set)
 make docker-test        # same integration suite, run inside compose against the real containers
 make test               # everything + coverage
 ```
@@ -250,6 +290,20 @@ make test               # everything + coverage
 - **Services:** pagination maths, not-found, the inverted date range rejected *before* the repo is hit, on-time-rate rounding, and model-not-loaded.
 - **HTTP contract:** real FastAPI routing, validation and error handlers with fake dependencies. Every status code in the table above is asserted, plus request-id echo and "500 never leaks internals".
 - **Logging:** the JSON formatter fields, and the middleware logging method, path, status and latency.
+- **ML evaluation and monitoring:**
+  - temporal splits never let training data overlap test data;
+  - the permutation test detects real signal and rejects noise;
+  - bootstrap intervals bracket the point estimate;
+  - the selection rule behaves as specified;
+  - PSI is stable on the same distribution, alerts on a shifted one, and seasonal features never trigger alone;
+  - the performance-based retrain triggers fire.
+- **Assistant:**
+  - every guardrail path: citations, repair, then fallback; refusal; tool budgets with `tool_choice: none`; input rejection;
+  - error rollback;
+  - the JSONL log schema;
+  - tool argument validation, where no API call happens on bad input;
+  - the Anthropic adapter's request and response mapping;
+  - pricing.
 
 **Integration tests (`tests/integration`)** need a real running service. If `SCI_BASE_URL` is set, they target that URL (for example the compose stack). Otherwise the fixture runs the real DQ checks and pipeline on the raw CSVs into a temp dir, starts `python -m app` as a subprocess on a free port, and waits for `/health` to return 200. Both paths run identical assertions.
 
@@ -259,6 +313,9 @@ make test               # everything + coverage
 - **DQ report:** the report shape, the known issues present, and filtering.
 - **Predict-delay:** prediction by ID and by booking, `model_version` matching `/health`, determinism, 404 and 422.
 - **Pipeline:** idempotency (build twice and get an identical fingerprint), plus curated-layer invariants: unique keys, no orphan ports, and `on_time_flag` consistent with the delay.
+- **Rankings and ports:** the default period is the latest complete quarter, sort order is correct, and rankings agree with `/routes/.../stats`.
+- **ML jobs:** training produces a loadable, fully documented artefact; the committed artefact contains the full experiment record; the monitoring job runs on the real warehouse.
+- **Assistant end-to-end:** a scripted LLM drives the real tools against the live API for the brief's three questions and the unknown-shipment path. The test checks that the answers contain the API's numbers and that the JSONL log is complete.
 
 **Flakiness notes.** Nothing depends on wall-clock time, randomness or external services. Model training uses a fixed seed. The only environment-sensitive part is the integration fixture's 60 s start-up timeout, which could be too short on a heavily loaded CI runner. It is a single constant in `tests/integration/conftest.py`.
 
@@ -292,6 +349,7 @@ Everything is implemented with **GitHub Actions** in `.github/workflows/`:
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `ci.yml` | every PR, push to `main`, `v*.*.*` tags, manual | Quality gates, Docker e2e, publish the tested image to GHCR |
+| `llm-eval.yml` | manual (`workflow_dispatch`) | Runs the assistant's live tests against the real Claude API, using the `ANTHROPIC_API_KEY` repository secret. Paid, so it is kept out of regular CI. |
 | `data-pipeline.yml` | data or data-code changes, nightly, manual | DQ gate → build, validate and export the warehouse → idempotency proof → data artefacts (see [Running the pipeline on GitHub](#running-the-pipeline-on-github)) |
 | `promote.yml` | manual (`workflow_dispatch`) | Deploy or roll back by pointing an environment tag at an already-published image |
 | `dependabot.yml` | weekly | Dependency PRs for pip, Docker base image and Actions, each going through the full CI |
@@ -488,6 +546,16 @@ docker compose logs --no-log-prefix api | jq -R -s -c '[split("\n")[] | fromjson
 - **Latency is high on every route.** This is resource pressure. Check `docker stats` for CPU and memory throttling. A single instance runs one Uvicorn process. Scale out with more replicas behind a load balancer, which is safe because the API is stateless and read-only.
 - **A spike of 4xx after a deployment.** This usually means the API contract changed under existing clients, for example a renamed field or a stricter validator. Compare `/openapi.json` between the two releases.
 
+#### D. Assistant or model issues
+
+| Symptom | Diagnose | Fix |
+|---|---|---|
+| `error: ANTHROPIC_API_KEY is not set` | Configuration | Export the key or add it to `.env`. In Docker: `ANTHROPIC_API_KEY=... docker compose --profile assistant run --rm assistant`. |
+| The answer says "the assistant failed: …" (`status=error`) | `jq -c 'select(.type=="error")' logs/assistant/*.jsonl`. Usually provider rate limits or overload (429 / 529), or network. The SDK already retries twice. | Retry. For persistent 529s, switch model with `--model`. The failed turn is rolled back, so the session continues. |
+| Answers are the "I won't guess" fallback | `jq -c 'select(.type=="guardrail" and .guardrail=="grounding_failed")'` shows the rejected answer and the reason | Usually a tool failed or returned nothing (check the `tool_call` records). If the model keeps omitting citations, review the prompt or switch models in the LLM eval workflow. |
+| Cost spike | `jq -s '[.[]|select(.type=="turn")]|map(.cost_usd)|add'`, grouped by `session_id` | Lower `SCI_ASSISTANT_MAX_TOOL_CALLS_PER_SESSION`, or check for a looping client |
+| Model monitoring says retrain | `python -m ml.monitor --last-days 30` shows the reasons | Retrain with `make train`, review `docs/MODEL_CARD.md`, and ship through the normal PR, CI and promote flow |
+
 ### 3. Rolling back a bad release
 
 **When.**
@@ -546,7 +614,7 @@ Base alerts on SLOs, and make every alert link to the relevant section of this r
 
 **Secrets management**
 
-- There are no secrets today. Part 3 adds an LLM API key, and a real database would add credentials.
+- The only secret today is the assistant's `ANTHROPIC_API_KEY`, read from the environment or an uncommitted `.env`, and from a repository secret in the LLM eval workflow. A real database would add credentials.
 - Keep those in a secrets manager such as AWS Secrets Manager, GCP Secret Manager or Vault. Inject them at runtime, never into the image, the Compose file or a committed `.env` file.
 - Rotate them on a schedule.
 - CI already avoids long-lived secrets: GHCR uses the per-run `GITHUB_TOKEN`.
@@ -790,7 +858,7 @@ erDiagram
 |---|---|---|---|---|
 | `curated.ports` | one port | `port_code` | parent of shipments (×2) and events | API joins, ML features |
 | `curated.shipments` | one shipment | `shipment_id` | → ports via `origin_port` and `destination_port`; → `raw.shipments._row_number` via `_source_row` | API, ML training |
-| `curated.port_events` | one event | `event_key` (surrogate) | → ports via `port_code`; vessel-level link to shipments via `vessel_id` | port-level metrics, Part 3 features |
+| `curated.port_events` | one event | `event_key` (surrogate) | → ports via `port_code`; vessel-level link to shipments via `vessel_id` | port-level metrics, point-in-time history features (`ml/history_features.py`) |
 | `quarantine.shipments` / `quarantine.port_events` | one rejected row | raw `_row_number` | → `raw.*` | investigation, replay |
 | `serving.route_stats` | one route (all time) | (`origin_port`, `destination_port`) | aggregates `curated.shipments` | route dashboards, GenAI tool |
 | `serving.route_quarterly_stats` | route × quarter | (`origin_port`, `destination_port`, `period`) | aggregates `curated.shipments` | "highest average delay this quarter" |
@@ -910,7 +978,8 @@ At 10,000× and beyond, I would move transforms to a cloud warehouse (BigQuery, 
 | DQ engine | **pandas** over raw strings | Row-level boolean masks are readable and unit-testable, and it is independent of the warehouse by design |
 | Transform | **DuckDB SQL** | Set-based, declarative and fast. The same SQL would port to Postgres or a warehouse. |
 | ML | **scikit-learn** (logistic regression) | A well-evaluated simple model beats an opaque one. The artefact is a joblib file with a SHA-256 check. |
-| LLM (Part 3) | **Anthropic Claude** via native tool use (planned) | First-class tool calling, which the assistant needs. The model and cost per query will be documented in Part 3. |
+| LLM | **Claude Haiku 5.5** via the Anthropic Messages API with native tool use (Sonnet 5.5 is selectable) | First-class tool calling with `tool_choice` control, prompt caching, and about $0.0007 per question. The task is routing plus phrasing, so a small, fast model is enough. See [GenAI assistant](#genai-assistant). |
+| Agent framework | **None**: a ~200-line explicit loop | LangChain-style frameworks hide the exact prompt and tool traffic that the brief asks to log. The explicit loop keeps every guardrail testable. |
 | Tests | **pytest** + **httpx** | Fixtures make the "real service over HTTP" integration tests simple |
 | Lint and format | **Ruff** | Replaces flake8, isort, black and bandit with one fast tool |
 | CI/CD | **GitHub Actions** + **GHCR** | Sits next to the code, needs no long-lived secrets, and has a built-in layer cache |
@@ -928,15 +997,297 @@ At 10,000× and beyond, I would move transforms to a cloud warehouse (BigQuery, 
 
 ---
 
-## Delay model: honest status
+## ML: delay prediction
 
-The model is a class-balanced **logistic regression** on booking-time features only: ports, regions and lane, cargo type, containers, weight, booking lead time, planned transit days, port congestion score, and calendar features. It is evaluated on a **temporal** 70/15/15 split by `booking_date`.
+**Task.** At booking time, predict whether a shipment will arrive **more than 24 hours late**. The full details, generated from the artefact, are in [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md).
 
-On the held-out test slice it scores **ROC-AUC 0.48, precision 0.37, recall 0.41, F1 0.39**. That is *no better than chance*. Univariate profiling agrees: no booking-time field moves the late rate by more than a few points, so the labels look close to random with respect to those fields.
+### Features, and why they are leakage-free
 
-Tuning the threshold for F1 made the model flag every shipment. That gets F1 0.57, which looks better on paper and is useless to an operator, so I fixed the threshold at 0.5 and report the trivial baselines alongside the model in `model_metadata.json`.
+Every feature is known when the booking is made. The same function, `ml.features.build_features`, builds them for training and for serving, so there is no train/serve skew.
 
-The endpoint, artefact handling and leakage boundary are production-shaped. Improving the signal is Part 3 work; for example, rolling port-event congestion features computed strictly before `booking_date`.
+| Group | Features | Rationale |
+|---|---|---|
+| Where | `origin_port`, `destination_port`, `origin_region`, `destination_region`, `region_lane` | Port operations and trade-lane effects. Regions and lane pool sparse ports, so there are no 600 sparse route dummies. |
+| What | `cargo_type`, `container_count`, `weight_tons` | Inspection-heavy cargo; handling volume; heavy cargo being rolled to a later vessel |
+| When | `booking_lead_days`, `transit_days_planned`, `departure_month`, `departure_dayofweek`, `booking_dayofweek` | Slack in the plan, voyage length, seasonality, staffing |
+| Port state | `origin_congestion`, `destination_congestion` | Reference congestion score from `ports.csv` |
+
+**Leakage controls.**
+
+- The repository's `get_booking_inputs` selects booking-time columns only, so actuals never leave the database on the serving path.
+- `LEAKY_COLUMNS` is asserted absent at training time.
+- A unit test proves that feeding the actuals in doesn't change a single feature value.
+
+**Explicitly excluded fields:**
+
+- `actual_*`, `status` and `on_time_flag`, because they are the outcome.
+- Raw `customer_id` and `vessel_id`, which would be memorised.
+- Port events during the voyage, which are not yet known at booking.
+
+**History features, tested but not shipped.** Point-in-time history features were *tested*: the late rate of the vessel, customer, route and origin port, and port-event delay over the 30 days before booking. Each uses only data that existed before that shipment's `booking_date`; this lives in `ml/history_features.py`. They gave no lift, and serving them would need a feature store, so they stay out of the model.
+
+### Evaluation protocol
+
+1. **Temporal splits only**, ordered by `booking_date`. A random split would leak future seasonality into training.
+   - *Development* is the oldest 85% of rows. It is used for **rolling-origin cross-validation**: 4 expanding-window folds, where training data is always strictly older than test data.
+   - *Test* is the newest 15% (685 shipments, booked from 2025-08-04). It is touched **once**, for the final numbers.
+2. **Four candidates** go through the identical protocol:
+   - a prior-only baseline;
+   - logistic regression;
+   - gradient boosting;
+   - logistic regression plus history features.
+3. **Selection rule** (`ml.train.select_candidate`): highest mean CV PR-AUC, *unless* the gain over the simplest servable model is within one standard deviation, in which case simplicity wins.
+4. **Uncertainty.** I report 95% bootstrap confidence intervals on test ROC-AUC and PR-AUC.
+5. **Sanity check.** A **label-permutation test** reruns the CV 20 times with shuffled labels, which shows what "no signal" looks like for this protocol.
+6. **The threshold is fixed at 0.5** on a class-balanced model. Tuning it for F1 degenerates to "flag everything" (F1 0.57 by flagging 100%), which looks good on paper and is useless to an operator. The threshold table is reported instead.
+7. **The production artefact** is the selected model refit on all labelled data. The reported test numbers come from the fit on the development set only.
+
+### Results
+
+| Candidate (rolling-origin CV, mean ± std) | ROC-AUC | PR-AUC | F1 |
+|---|---|---|---|
+| prior baseline | 0.500 ± 0.000 | 0.411 ± 0.021 | 0.000 |
+| **logistic regression (selected)** | 0.494 ± 0.018 | 0.408 ± 0.021 | 0.452 ± 0.023 |
+| gradient boosting | 0.502 ± 0.015 | 0.419 ± 0.011 | 0.481 ± 0.032 |
+| logistic regression + history | 0.486 ± 0.019 | 0.406 ± 0.023 | 0.448 ± 0.035 |
+
+| Test set (n = 685, 39.7% late) | Precision | Recall | F1 | ROC-AUC [95% CI] | PR-AUC [95% CI] |
+|---|---|---|---|---|---|
+| **Model** | 0.386 | 0.449 | 0.415 | **0.488 [0.446, 0.533]** | 0.409 [0.359, 0.466] |
+| Always predict "late" | 0.397 | 1.000 | 0.568 | 0.500 | 0.397 |
+
+**Permutation test.** Models trained on shuffled labels average an AUC of 0.497, with a 95th percentile of 0.514. The real model scores 0.494, giving **p = 0.57**.
+
+**Honest conclusion: these features carry no detectable signal about delay on this dataset.** The evidence points the same way from several directions:
+
+- every model family lands at chance;
+- the leakage-safe history features change nothing;
+- the confidence interval contains 0.5;
+- the permutation test cannot tell the model apart from random labels;
+- profiling agrees: no booking-time field moves the late rate by more than a few points, and same-lane planned transit varies from 3 to 35 days (DQ check `planned_transit_outlier_for_route`).
+
+I kept logistic regression because it is the simplest servable model. Gradient boosting's +0.011 PR-AUC is within one standard deviation. The model is shipped to prove the serving, leakage and monitoring path end to end; the API, the model card and the assistant all label its output **low-confidence**. With features that carry signal, the same pipeline would detect and select a better model automatically.
+
+### Monitoring in production
+
+| Signal | How | Threshold / trigger |
+|---|---|---|
+| Feature drift | PSI per feature against the training reference stored in `model_metadata.json` | > 0.10 investigate; **> 0.25 retrain**. `departure_month` is reported but never triggers on its own, because it is seasonal. |
+| Unseen categories | Share of traffic with ports or cargo types not seen in training | **> 5% retrain** |
+| Prediction drift | PSI of predicted probabilities, and the mean prediction | **> 0.25 retrain** |
+| Live performance | ROC-AUC, PR-AUC, precision and recall on shipments whose outcome has arrived. Labels lag by transit time plus 24 h. | **Live AUC more than 0.05 below the validated CV AUC**, on at least 200 labelled shipments |
+| Base-rate shift | Share of late shipments vs training | **More than 5 points absolute** |
+| Serving health | `prediction.served` JSON log per prediction (model version, inputs, probability, request id), plus latency and error rate per route | Alerting via the runbook |
+| Upstream data | The DQ gate and the pipeline contract | A failing gate blocks the data, and therefore the retrain |
+
+`python -m ml.monitor --last-days 90` (or `make monitor`) runs all of the drift and performance checks and prints an explicit **retrain decision with reasons**. `--fail-on-retrain` makes it exit 3 for schedulers. The data-pipeline workflow runs it on every build and puts the PSI table in the run summary. The demo window overlaps the training data, so its performance numbers are in-sample, and the report says so.
+
+**Retraining.** Retrain monthly on a schedule, or immediately when a trigger fires. A challenger model is promoted only if it beats the champion on the same rolling-origin protocol and on a recent holdout. Models are versioned by `model_version` and the SHA-256 of the artefact. Rollback is redeploying the previous image, which includes its model.
+
+---
+
+## GenAI assistant
+
+A CLI assistant that answers questions about the data by **calling tools against the live API**. It never reads the database directly and never answers figures from memory.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...        # or put it in .env
+make run                                   # terminal 1: the API on :8000
+python -m assistant                        # terminal 2: interactive
+python -m assistant ask "What is the on-time rate for shipments from Shanghai to Rotterdam?"
+python -m assistant demo                   # the brief's three example questions
+# Docker: ANTHROPIC_API_KEY=... docker compose --profile assistant run --rm assistant
+```
+
+### LLM choice and cost
+
+**Model.** The assistant uses **Claude Haiku 5.5** (`claude-haiku-5-5`) via Anthropic's Messages API with native tool use. You can switch with `--model claude-sonnet-5-5` or `SCI_ASSISTANT_MODEL`. Haiku is the right size for this job: the model routes the question to one or two tools and phrases a short, cited answer. The heavy lifting (SQL, statistics, the ML model) happens behind the tools. Temperature is 0, and the system prompt plus tool schemas are marked for prompt caching.
+
+**Rough cost per query.**
+
+- The system prompt and tool schemas are about 7k characters, roughly 2–2.5k tokens.
+- A typical question takes 2 LLM calls (choose a tool, then answer). That is about 5–6k input tokens and about 300 output tokens.
+- At Haiku 5.5 list prices ($0.10 / $0.50 per MTok for prompts up to 100K tokens) that is **about $0.0007 per question, roughly $0.70 per 1,000 questions**.
+- On Sonnet 5.5 ($2 / $10) it is about $0.015 per question.
+
+**These are estimates.** The real cost of every turn is computed from the API's token usage and printed by the CLI (`≈$0.0007`). It is also logged per LLM call. Prices live in `assistant/pricing.py` and can be overridden by environment variable.
+
+### How a question flows
+
+```mermaid
+sequenceDiagram
+    participant U as User (CLI)
+    participant A as Agent loop
+    participant C as Claude
+    participant T as Tool registry
+    participant API as FastAPI service
+    U->>A: question
+    A->>A: input guard (empty / too long)
+    A->>C: system prompt (scope, citation rules, port table, data coverage) + history + tool schemas
+    C-->>A: tool_use get_route_stats(CNSHA, NLRTM)
+    A->>A: budget guard (≤ 6 tools / question, ≤ 40 / session)
+    A->>T: validate arguments (pydantic, extra=forbid)
+    T->>API: GET /routes/CNSHA/NLRTM/stats
+    API-->>T: JSON
+    T-->>A: result tagged source_id S1 (size-capped)
+    A->>C: tool_result
+    C-->>A: "On-time rate is 75% over 12 completed shipments [S1]."
+    A->>A: grounding guard (numbers ⇒ valid [S#] citations)
+    A-->>U: answer + sources + tokens + cost
+    Note over A: every LLM call, tool call, guardrail event and turn → logs/assistant/*.jsonl
+```
+
+### Tools
+
+The model decides when to call each tool.
+
+| Tool | Backed by | Use |
+|---|---|---|
+| `query_shipments(filters, sort_by, order, limit)` | `GET /shipments/{id}` or `GET /shipments` | One shipment by id, or filtered lists by origin, destination, status, cargo type and date range. Always returns the total match count. |
+| `get_route_stats(origin, destination, date_from?, date_to?)` | `GET /routes/{o}/{d}/stats` | Average, median and p90 delay, on-time rate, and counts for one route |
+| `rank_routes(metric, order, period, min_completed, limit)` | `GET /routes/rankings` (new) | "Which routes had the highest average delay this quarter?" `period=latest` resolves to the most recent **complete** quarter. |
+| `predict_delay(shipment_id)` | `POST /predict-delay` (the ML endpoint) | Delay risk, returned with a low-confidence caveat taken from the model card |
+
+**Port names.** The port table comes from the new `GET /ports` endpoint and is injected into the system prompt at session start, so "Shanghai to Rotterdam" becomes CNSHA → NLRTM without spending a tool call.
+
+**The "this quarter" problem.** Today is October 2026, but the data ends in 2025-Q4, and that quarter is only partial. The system prompt tells the model the data coverage. The rankings endpoint resolves `latest` to **2025-Q3** and says so in its response. The model is instructed to tell the user which quarter it used, rather than silently answering about a different period.
+
+What the tools return today for the brief's questions:
+
+| Question | Tool called | Data returned |
+|---|---|---|
+| "Highest average delay this quarter?" | `rank_routes(period=latest)` | Resolves to 2025-Q3. Top route is USNYC → JPYOK, averaging 123 h late (3 completed shipments). Small samples are filtered with `min_completed`. |
+| "On-time rate Shanghai → Rotterdam?" | `get_route_stats(CNSHA, NLRTM)` | 75% on time over 12 completed shipments (13 total, 1 cancelled) |
+| "Delay risk for SHP-00421?" | `predict_delay(SHP-00421)` | Probability 0.418, risk band MEDIUM, plus the low-confidence caveat |
+
+### Guardrails
+
+All of these are enforced in code, not only requested in the prompt, and every one is tested.
+
+| # | Guardrail | Mechanism |
+|---|---|---|
+| 1 | **Grounding and citations** | Each successful tool call gets a `source_id` (S1, S2…). The model must cite the source of each factual sentence as `[S#]`. Code then checks the answer: if it contains figures but no citation, or cites an id that doesn't exist, the agent sends **one repair turn**. If that also fails, the agent returns a fixed "I won't guess" answer. This stops invented numbers from being presented as facts. |
+| 2 | **Scope** | Off-domain questions get a one-line refusal prefixed with `OUT_OF_SCOPE:`, with no tool calls. The refusal is detected, logged and shown without the marker. |
+| 3 | **Budgets** | At most 6 tool calls per question, 40 per session and 8 LLM calls per question. When the tool budget is spent, the agent sends `tool_choice: none` to force an answer from what it has. This bounds cost and stops loops. |
+| 4 | **Validated, read-only tools** | Pydantic schemas with `extra="forbid"`, so the model can't smuggle in arguments such as `{"sql": ...}`. Port and id patterns, and limits capped at 25 rows, are checked *before* any HTTP call. All access goes through the API, inheriting its validation and its read-only database connection. |
+| 5 | **Injection hygiene** | Tool results are delivered as data and the prompt says to ignore instructions inside them. Results are size-capped at 6,000 characters. |
+| 6 | **Input guard** | Empty questions, and questions over 2,000 characters, are rejected without calling the LLM. |
+
+### LLM observability
+
+Every interaction is appended to `logs/assistant/assistant-YYYYMMDD.jsonl` as one JSON object per line. Every record carries the `session_id` and `turn_id`, so a whole conversation can be replayed.
+
+| Record | Contents |
+|---|---|
+| `session_start` | Model, **full system prompt** and its SHA-256, full tool schemas, guardrail limits |
+| `llm_call` | **The prompt sent** (the full message history, system-prompt hash, tools offered, tool_choice), the raw response blocks (text and tool_use), stop reason, token usage including cache reads, cost in USD, latency |
+| `tool_call` | Tool name, arguments, `ok` flag, `source_id`, **the exact result returned to the model**, truncation flag, latency |
+| `guardrail` | Which guardrail fired (`grounding_failed`, `out_of_scope`, `tool_budget_exceeded`, `input_rejected` and so on), with details including the rejected answer |
+| `turn` | Question, **final answer**, status, cited sources, tools called, totals for LLM calls, tokens and cost, latency |
+| `error` | Provider or network failure. The half-finished turn is rolled back so the session stays valid. |
+
+Example query, the cost of the last 100 turns:
+
+```bash
+jq -s '[.[] | select(.type=="turn")] | .[-100:] | map(.cost_usd) | add' logs/assistant/*.jsonl
+```
+
+### Testing the assistant without an API key
+
+- **Unit tests** use a scripted fake LLM. They cover the agent loop, every guardrail path, budget enforcement, error rollback, the log schema, tool validation, the Anthropic adapter's request and response mapping (against a fake SDK) and pricing.
+- **Integration tests** (`tests/integration/test_assistant_e2e.py`) drive the assistant against the **real running API** with a scripted LLM. They cover the brief's three questions, the unknown-shipment error path, and the complete JSONL log.
+- **Live tests** (`pytest -m live_llm`) ask the real Claude API the three questions plus an off-domain one. They are skipped unless `ANTHROPIC_API_KEY` is set. On GitHub, they run from the manual **LLM eval** workflow using a repository secret, so regular CI stays free and deterministic.
+
+---
+
+## If I had more time
+
+**Signal before sophistication.** The model is at chance, and the evidence says the problem is the features, not the algorithm. Next I would look for data that plausibly drives delay:
+
+- vessel schedules and rotation, to know whether this vessel is already running late on its previous leg;
+- berth and yard utilisation;
+- weather and strike feeds keyed to the port and the sailing window;
+- the carrier's own on-time history from public schedule-reliability data.
+
+I would put a small point-in-time **feature store** in front of these, so history features can be served without leakage. Only then is it worth trying calibrated gradient boosting with proper hyperparameter search.
+
+**Evaluation of the assistant.**
+
+- Build a golden set of 50–100 questions with expected tool calls and expected numbers, scored automatically in the LLM eval workflow: tool-selection accuracy, answer-contains-correct-figure, citation validity, refusal precision and recall.
+- Track cost and latency per model.
+- A/B Haiku against Sonnet on that set before changing the default.
+- Add streaming output to the CLI, and keep the session history bounded by summarising old turns.
+
+**Data engineering.**
+
+- Incremental loads (`MERGE` on `shipment_id`, partitioned events with a lateness watermark) behind the same contract.
+- Move the DQ checks into SQL so they run in the engine at any size.
+- Treat `port_events` as a real stream with replay and deduplication.
+- SCD2 history for ports, which change rarely but do change.
+
+**Engineering.**
+
+- Authentication and rate limiting on the API.
+- A Prometheus `/metrics` endpoint and OpenTelemetry traces that link the assistant's tool calls to API request ids.
+- Contract tests for the OpenAPI schema between releases.
+- Property-based tests (Hypothesis) for the DQ checks.
+- Load tests to set real SLOs.
+
+**What I would not change.** The leakage boundary, the explicit agent loop and the "build once, promote" release flow.
+
+---
+
+## Scaling to production
+
+**What breaks first: the single-file warehouse.** DuckDB is ideal for one writer and one reader process. At millions of shipments with 24/7 traffic, the constraint is not query speed but access pattern. Many API replicas on different hosts can't share one file, and the pipeline can't rebuild it under them; today the API must restart to see new data. I would split the store by workload:
+
+- an **object-storage lake** of Parquet, partitioned by date, as the system of record;
+- **DuckDB, Polars or Spark** for transforms, with incremental `MERGE` loads and a periodic full rebuild as a correctness backstop;
+- **managed Postgres** as the *serving* store, with indexed point lookups for `/shipments/{id}`, materialised route and quarter aggregates refreshed by the pipeline, and read replicas for scale.
+
+The API code barely changes, because services depend on repository Protocols: one new `PostgresShipmentRepository` and its tests.
+
+**Ingestion becomes a stream.** The port-event feed moves to Kafka or Kinesis. Consumers deduplicate on the content-hash `event_key`, which already exists, and handle late events with a watermark. Per-batch DQ checks sit in front of the lake. The baseline gate becomes a per-partition SLO with quarantine topics instead of a failed job. Orchestration moves to Dagster or Airflow for retries, backfills, lineage and freshness SLAs.
+
+**24/7 reliability.**
+
+- Run several stateless API replicas behind a load balancer, using `/health` as the readiness probe. The degraded-mode design already keeps one bad dependency from taking everything down.
+- Deploy blue/green or canary, driven by the existing promote-by-digest flow, with automated rollback on SLO burn.
+- Define SLOs for availability, p95 latency and data freshness, and alert on error-budget burn rather than raw thresholds.
+- Keep secrets in a secrets manager, use per-service identities, and terminate TLS at the edge.
+
+**ML at scale.**
+
+- A feature store gives consistent offline and online features.
+- A model registry tracks champion and challenger models, with shadow scoring before promotion.
+- Prediction logs, which already exist as `prediction.served`, are joined with outcomes once arrivals land, to compute live performance continuously.
+- The monitoring job runs on a schedule with `--fail-on-retrain` feeding the alerting system.
+- High-volume scoring moves to batch, writing predictions to the serving store, while the API keeps the online path for new bookings.
+
+**The assistant at scale.**
+
+- Put it behind an authenticated service rather than a CLI, with per-user rate limits and budgets. The guardrail counters move from per-session to per-tenant.
+- Ship the JSONL logs to the central log store, and redact PII before they leave the service.
+- Add response caching for repeated questions.
+- Add model fallback (Haiku first, Sonnet only on low-confidence or failed grounding) and a provider circuit breaker.
+- Treat the golden-set evaluation as a release gate for prompt or model changes.
+
+**Decisions I would revisit.**
+
+- Full rebuilds, which become incremental loads.
+- The single store, which splits into lake and serving store.
+- pandas-based DQ, which moves to in-engine SQL.
+- The CLI-only assistant, which becomes a service.
+- GitHub Actions as the data scheduler, which becomes a real orchestrator.
+
+**Decisions I would keep.**
+
+- The raw, curated, quarantine and serving contract.
+- The atomic swap and validation gate, which become partition-level publish-after-validate.
+- The domain rules in `shared/`.
+- The leakage boundary.
+- Build once, promote.
+- Structured logs with correlation ids end to end.
 
 ---
 
@@ -950,4 +1301,13 @@ The endpoint, artefact handling and leakage boundary are production-shaped. Impr
 
 ## Where AI helped
 
-I used Claude as a pair-programmer for scaffolding, test enumeration and README drafting. The key decisions were mine, and I checked each one against the data. That includes the layering and patterns; read-only API with atomic warehouse swap; DQ decisions per issue (e.g. null-out vs drop vs quarantine); the leakage boundary; and the call to report a chance-level model honestly rather than ship a degenerate threshold.
+> **Edit this section to reflect your own process.**
+
+I used Claude as a pair-programmer for scaffolding, test enumeration and README drafting. The key decisions were mine, and I checked each one against the data:
+
+- the layering and design patterns;
+- the read-only API with an atomic warehouse swap;
+- the DQ decision for each issue (for example null-out vs drop vs quarantine) and the baseline regression gate;
+- the leakage boundary, and testing history features point-in-time rather than with a naive group-by;
+- reporting a chance-level model honestly, with a permutation test, rather than shipping a degenerate threshold;
+- an explicit agent loop instead of a framework, so every LLM call and guardrail is visible and testable.

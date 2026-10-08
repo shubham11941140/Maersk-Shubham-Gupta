@@ -3,11 +3,15 @@
 #   pipeline (one-shot) : DQ checks on raw CSVs -> build DuckDB warehouse -> exit 0
 #   api                 : starts only after the pipeline completed successfully
 #   integration-tests   : (profile "test") runs the e2e suite against http://api:8000
+#   assistant           : (profile "assistant") interactive GenAI CLI against http://api:8000
+#                         ANTHROPIC_API_KEY=... docker compose --profile assistant run --rm assistant
 
 name: supply-chain-intel
 
 x-app-image: &app-image
-  image: supply-chain-intel:local
+  # Override to run a published release, e.g. for rollback:
+  #   SCI_IMAGE=ghcr.io/<owner>/<repo>:sha-<commit> docker compose up -d --no-build
+  image: ${SCI_IMAGE:-supply-chain-intel:local}
   build:
     context: .
     target: runtime
@@ -49,6 +53,25 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  assistant:
+    <<: *app-image
+    profiles: ["assistant"]
+    command: ["python", "-m", "assistant"]
+    stdin_open: true
+    tty: true
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SCI_ASSISTANT_MODEL: ${SCI_ASSISTANT_MODEL:-claude-haiku-5-5}
+      SCI_ASSISTANT_API_URL: http://api:8000
+      SCI_ASSISTANT_LOG_DIR: /var/lib/sci/logs/assistant
+    volumes:
+      - sci-state:/var/lib/sci
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
 
 volumes:
   sci-state:

@@ -14,3 +14,4 @@ artifacts/dq_report.json
 *.tmp
 .env
 README.md
+logs

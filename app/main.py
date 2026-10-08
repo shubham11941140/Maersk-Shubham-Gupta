@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import __version__
-from app.api import data_quality, health, predictions, routes, shipments
+from app.api import data_quality, health, ports, predictions, routes, shipments
 from app.config import Settings, get_settings
 from app.db import Database
 from app.errors import register_exception_handlers
@@ -61,7 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)
-    for module in (health, shipments, routes, predictions, data_quality):
+    for module in (health, shipments, routes, ports, predictions, data_quality):
         app.include_router(module.router)
     return app
 

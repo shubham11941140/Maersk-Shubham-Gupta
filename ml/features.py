@@ -53,6 +53,37 @@ NUMERIC_FEATURES: tuple[str, ...] = (
 )
 FEATURE_COLUMNS: tuple[str, ...] = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 
+# Why each feature is in the model. Every one is known when the booking is made.
+FEATURE_DOCS: dict[str, str] = {
+    "origin_port": "Port-specific operations (congestion, labour, weather exposure).",
+    "destination_port": "Same, at the discharge end — where an arrival delay is actually measured.",
+    "cargo_type": "Inspection-heavy cargo (pharma, chemicals, food) can be held at customs.",
+    "origin_region": "Coarser version of origin_port; helps ports with few shipments.",
+    "destination_region": "Coarser version of destination_port.",
+    "region_lane": "Trade lane (e.g. APAC->EUR): route-level effects without 600 sparse route dummies.",
+    "container_count": "Larger consignments need more handling slots.",
+    "weight_tons": "Heavy cargo can be rolled to a later vessel when capacity is tight.",
+    "booking_lead_days": "Late bookings get worse slots; long lead times give planners slack.",
+    "transit_days_planned": "Longer voyages have more opportunity to accumulate delay.",
+    "origin_congestion": "Reference congestion score of the origin port (ports.csv).",
+    "destination_congestion": "Reference congestion score of the destination port.",
+    "departure_month": "Seasonality (peak season, monsoon, winter storms).",
+    "departure_dayofweek": "Weekend departures can face reduced port staffing.",
+    "booking_dayofweek": "Proxy for booking process / channel.",
+}
+
+# Deliberately excluded, with the reason (leakage or no booking-time availability).
+EXCLUDED_FEATURES: dict[str, str] = {
+    "actual_departure / actual_arrival / actual_delay_hours / transit_days_actual": "Leakage: only known after "
+    "the fact — the target is derived from them.",
+    "status / on_time_flag": "Leakage: derived from the outcome.",
+    "shipment_id": "An identifier, not a property of the shipment.",
+    "customer_id / vessel_id (raw)": "Hundreds of sparse ids → memorisation. Their point-in-time history was "
+    "tested instead (ml/history_features.py) and gave no lift.",
+    "port_events (same window)": "Events during the voyage are not known at booking. Events before booking "
+    "were tested as point-in-time features — no lift.",
+}
+
 
 @dataclass(frozen=True)
 class PortInfo:

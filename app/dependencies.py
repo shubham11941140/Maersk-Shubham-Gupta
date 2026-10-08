@@ -9,7 +9,9 @@ from __future__ import annotations
 from fastapi import Request
 
 from app.config import Settings
+from app.repositories.analytics_repository import DuckDBAnalyticsRepository
 from app.repositories.shipment_repository import DuckDBShipmentRepository, ShipmentRepository
+from app.services.analytics_service import AnalyticsService
 from app.services.data_quality_service import DataQualityReportService
 from app.services.health_service import HealthService
 from app.services.prediction_service import PredictionService
@@ -44,3 +46,7 @@ def get_dq_service(request: Request) -> DataQualityReportService:
 def get_health_service(request: Request) -> HealthService:
     state = request.app.state
     return HealthService(state.settings, state.db, state.predictor, state.dq_service, state.started_at)
+
+
+def get_analytics_service(request: Request) -> AnalyticsService:
+    return AnalyticsService(DuckDBAnalyticsRepository(request.app.state.db))

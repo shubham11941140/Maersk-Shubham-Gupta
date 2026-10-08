@@ -28,7 +28,7 @@ ENV PATH="/opt/venv/bin:$PATH" \
 # volume mounted there inherits the right ownership.
 RUN groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --home-dir /app --shell /usr/sbin/nologin app \
- && mkdir -p /var/lib/sci/warehouse /var/lib/sci/reports \
+ && mkdir -p /var/lib/sci/warehouse /var/lib/sci/reports /var/lib/sci/logs/assistant \
  && chown -R app:app /var/lib/sci
 
 WORKDIR /app
@@ -38,6 +38,7 @@ COPY dq ./dq
 COPY pipeline ./pipeline
 COPY ml ./ml
 COPY app ./app
+COPY assistant ./assistant
 COPY scripts ./scripts
 COPY dq_check.py ./
 COPY data/raw ./data/raw

@@ -3,6 +3,7 @@
 #
 #   dq-gate (raw CSVs only)  ─►  build (raw → curated/quarantine → serving, contract-validated)
 #                                  ├─ idempotency proof (2nd run, identical fingerprint)
+#                                  ├─ model monitoring (drift + live performance + retrain decision)
 #                                  └─ artefacts: warehouse.duckdb · Parquet export · DQ report · run summary
 #
 # Triggers: changes to data or data code, a nightly schedule, or on demand.
@@ -17,6 +18,8 @@ on:
       - "dq/**"
       - "pipeline/**"
       - "shared/**"
+      - "ml/**"
+      - "artifacts/model/**"
       - "requirements.txt"
       - ".github/workflows/data-pipeline.yml"
   pull_request:
@@ -25,6 +28,8 @@ on:
       - "dq/**"
       - "pipeline/**"
       - "shared/**"
+      - "ml/**"
+      - "artifacts/model/**"
       - "requirements.txt"
       - ".github/workflows/data-pipeline.yml"
   schedule:
@@ -132,11 +137,33 @@ jobs:
       - name: Run summary
         run: python scripts/pipeline_summary.py "$OUT/supply_chain.duckdb" >> "$GITHUB_STEP_SUMMARY"
 
+      # Scores the most recent 90 days of bookings with the committed model and compares them with the
+      # training reference. Informational here (the demo window overlaps training data); in production
+      # add --fail-on-retrain so a fired trigger fails the job and alerts.
+      - name: Model monitoring (drift + performance)
+        run: |
+          python -m ml.monitor --db "$OUT/supply_chain.duckdb" --model-dir artifacts/model \
+            --last-days 90 --output "$OUT/model_monitoring.json" > /dev/null
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          r = json.load(open(os.path.join(os.environ["OUT"], "model_monitoring.json")))
+          d = r["decision"]
+          print(f"### Model monitoring — model `{r['model_version']}`, {r['bookings']} bookings since {r['window']['from']}\n")
+          print(f"**Retrain recommended:** {'YES' if d['retrain'] else 'no'}" + (f" — {'; '.join(d['reasons'])}" if d['reasons'] else ""))
+          if r.get("note"):
+              print(f"\n> {r['note']}")
+          print("\n| Feature | PSI | Status |\n|---|---:|---|")
+          for k, v in r["features"].items():
+              print(f"| `{k}` | {v['psi']} | {v['status']} |")
+          print(f"| *prediction* | {r['prediction']['psi']} | {r['prediction']['status']} |")
+          PY
+
       - uses: actions/upload-artifact@v4
         with:
           name: warehouse-${{ github.run_number }}
           path: |
             ${{ env.OUT }}/supply_chain.duckdb
             ${{ env.OUT }}/pipeline_run.json
+            ${{ env.OUT }}/model_monitoring.json
             ${{ env.OUT }}/export/
           retention-days: 14

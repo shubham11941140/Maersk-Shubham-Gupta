@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from app.errors import DependencyUnavailableError, PortNotFoundError, ShipmentNotFoundError
 from app.repositories.shipment_repository import ShipmentRepository
 from app.schemas.predictions import BookingFeatures, PredictDelayRequest, PredictDelayResponse
 from ml.predictor import Predictor
+
+# Dedicated logger: every served prediction is one structured line. This is the raw
+# material for production monitoring (prediction drift, join with outcomes later).
+prediction_log = logging.getLogger("app.predictions")
 
 
 class PredictionService:
@@ -31,6 +37,17 @@ class PredictionService:
                 raise PortNotFoundError(missing)
 
         result = self._predictor.predict(booking.model_dump())
+        prediction_log.info(
+            "prediction.served",
+            extra={
+                "model_version": result.model_version,
+                "shipment_id": request.shipment_id,
+                "delay_probability": result.delay_probability,
+                "risk_band": result.risk_band,
+                "predicted_delayed": result.predicted_delayed,
+                "inputs": booking.model_dump(mode="json"),
+            },
+        )
         return PredictDelayResponse(
             shipment_id=request.shipment_id,
             delay_probability=result.delay_probability,

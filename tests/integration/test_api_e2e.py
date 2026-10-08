@@ -168,3 +168,35 @@ class TestPredictDelay:
 def test_request_id_propagation(client):
     resp = client.get("/health/live", headers={"X-Request-ID": "e2e-trace-1"})
     assert resp.headers["x-request-id"] == "e2e-trace-1"
+
+
+class TestAnalytics:
+    def test_ports(self, client):
+        items = client.get("/ports").json()["items"]
+        assert len(items) == 25
+        assert {"CNSHA", "NLRTM"} <= {p["port_code"] for p in items}
+
+    def test_rankings_default_is_latest_complete_quarter(self, client):
+        body = client.get("/routes/rankings").json()
+        assert body["period"] == body["latest_complete_period"]
+        assert body["period_is_complete"] is True
+        delays = [i["avg_delay_hours"] for i in body["items"]]
+        assert delays == sorted(delays, reverse=True)
+        assert all(i["completed_count"] >= body["min_completed"] for i in body["items"])
+
+    def test_rankings_all_time_on_time_ascending(self, client):
+        body = client.get(
+            "/routes/rankings",
+            params={"metric": "on_time_rate", "order": "asc", "period": "all", "min_completed": 8, "limit": 5},
+        ).json()
+        rates = [i["on_time_rate"] for i in body["items"]]
+        assert rates == sorted(rates)
+        assert len(rates) == 5
+
+    def test_rankings_consistent_with_route_stats(self, client):
+        top = client.get("/routes/rankings", params={"period": "all", "limit": 1}).json()["items"][0]
+        stats = client.get(f"/routes/{top['origin_port']}/{top['destination_port']}/stats").json()
+        assert stats["avg_delay_hours"] == pytest.approx(top["avg_delay_hours"], abs=0.01)
+
+    def test_unknown_period_422(self, client):
+        assert client.get("/routes/rankings", params={"period": "2019-Q1"}).status_code == 422

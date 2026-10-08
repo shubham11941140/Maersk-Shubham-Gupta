@@ -79,6 +79,13 @@ class SklearnDelayPredictor:
     def metadata(self) -> dict[str, Any]:
         return self._metadata
 
+    def features(self, bookings: pd.DataFrame) -> pd.DataFrame:
+        return build_features(bookings, self._ports)
+
+    def predict_proba_batch(self, bookings: pd.DataFrame) -> Any:
+        """Probabilities for many bookings at once (used by offline monitoring)."""
+        return self._pipeline.predict_proba(self.features(bookings))[:, 1]
+
     def predict(self, booking: dict[str, Any]) -> Prediction:
         features = build_features(pd.DataFrame([booking]), self._ports)
         proba = float(self._pipeline.predict_proba(features)[0, 1])

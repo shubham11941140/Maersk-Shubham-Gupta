@@ -6,7 +6,7 @@ DQ_BASELINE ?= dq/baseline.json
 EXPORT ?= data/export
 
 .DEFAULT_GOAL := help
-.PHONY: help install dq dq-baseline dq-docs pipeline pipeline-check export data train run test test-unit test-integration lint format \
+.PHONY: help install dq dq-baseline dq-docs model-card monitor assistant assistant-demo pipeline pipeline-check export data train run test test-unit test-integration lint format \
         docker-up docker-down docker-logs docker-test ci smoke clean
 
 help: ## Show available targets
@@ -39,8 +39,21 @@ export: pipeline ## Export curated / quarantine / serving relations as Parquet
 
 data: dq pipeline ## DQ checks + pipeline
 
-train: data ## Retrain the delay model (writes artifacts/model/)
+train: data ## Retrain + evaluate the delay model (CV, candidates, permutation test) and refresh the model card
 	$(PY) -m ml.train --db $(DB) --out artifacts/model
+	$(PY) -m ml.model_card artifacts/model/model_metadata.json > docs/MODEL_CARD.md
+
+model-card: ## Regenerate docs/MODEL_CARD.md from the committed artefact
+	$(PY) -m ml.model_card artifacts/model/model_metadata.json > docs/MODEL_CARD.md
+
+monitor: pipeline ## Drift + performance report for the last 90 days of bookings
+	$(PY) -m ml.monitor --db $(DB) --model-dir artifacts/model --last-days 90
+
+assistant: ## Interactive GenAI assistant (needs ANTHROPIC_API_KEY and the API on :8000)
+	$(PY) -m assistant
+
+assistant-demo: ## Ask the brief's three example questions
+	$(PY) -m assistant demo
 
 run: data ## Run the API locally on :8000
 	$(PY) -m app
