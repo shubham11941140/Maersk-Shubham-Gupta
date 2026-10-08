@@ -28,18 +28,17 @@ pytestmark = [
     ],
 )
 
-"""
-def test_example_questions(base_url, tmp_path, question, expected_tool):
-    bot = build_assistant(AssistantSettings(api_url=base_url, log_dir=tmp_path))
-    ans = bot.ask(question)
-    assert ans.status == "answered", ans.text
-    assert expected_tool in {s.tool for s in ans.sources}
-    assert "[S" in ans.text
+# 
+# def test_example_questions(base_url, tmp_path, question, expected_tool):
+#     bot = build_assistant(AssistantSettings(api_url=base_url, log_dir=tmp_path))
+#     ans = bot.ask(question)
+#     assert ans.status == "answered", ans.text
+#     assert expected_tool in {s.tool for s in ans.sources}
+#     assert "[S" in ans.text
 
 
-def test_off_domain_question_is_refused(base_url, tmp_path):
-    bot = build_assistant(AssistantSettings(api_url=base_url, log_dir=tmp_path))
-    ans = bot.ask("What's a good recipe for banana bread?")
-    assert ans.status == "refused"
-    assert ans.tool_calls == 0
-"""
+# def test_off_domain_question_is_refused(base_url, tmp_path):
+#     bot = build_assistant(AssistantSettings(api_url=base_url, log_dir=tmp_path))
+#     ans = bot.ask("What's a good recipe for banana bread?")
+#     assert ans.status == "refused"
+#     assert ans.tool_calls == 0
