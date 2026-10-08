@@ -49,7 +49,7 @@ model-card: ## Regenerate docs/MODEL_CARD.md from the committed artefact
 monitor: pipeline ## Drift + performance report for the last 90 days of bookings
 	$(PY) -m ml.monitor --db $(DB) --model-dir artifacts/model --last-days 90
 
-assistant: ## Interactive GenAI assistant (needs ANTHROPIC_API_KEY and the API on :8000)
+assistant: ## Interactive GenAI assistant (needs OPENAI_API_KEY and the API on :8000)
 	$(PY) -m assistant
 
 assistant-demo: ## Ask the brief's three example questions

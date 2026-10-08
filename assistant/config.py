@@ -1,4 +1,8 @@
-"""Assistant settings — environment variables with prefix ``SCI_ASSISTANT_`` (API key: ``ANTHROPIC_API_KEY``)."""
+"""Assistant settings — environment variables with prefix ``SCI_ASSISTANT_``.
+
+OpenAI credentials use the SDK's standard names: ``OPENAI_API_KEY`` and (optionally)
+``OPENAI_BASE_URL`` for Azure OpenAI, OpenRouter, or a local Ollama / vLLM server.
+"""
 
 from __future__ import annotations
 
@@ -12,11 +16,14 @@ class AssistantSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SCI_ASSISTANT_", env_file=".env", extra="ignore")
 
     # LLM
-    model: str = "claude-haiku-5-5"
-    max_tokens: int = 1024
-    temperature: float = 0.0  # deterministic-ish answers over data
+    model: str = "gpt-5.6-luna"
+    # GPT-5.6 models reason before answering; "low" keeps tool routing fast and cheap.
+    # Set to "" for models without a reasoning_effort parameter (e.g. many local models).
+    reasoning_effort: str = "low"
+    max_tokens: int = 2048  # includes reasoning tokens
     request_timeout_s: float = 60.0
-    anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
+    openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openai_base_url: str | None = Field(default=None, validation_alias="OPENAI_BASE_URL")
 
     # Data product
     api_url: str = "http://localhost:8000"

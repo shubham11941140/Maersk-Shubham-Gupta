@@ -4,12 +4,12 @@
 
 A thin, end-to-end slice of a supply-chain intelligence platform. It covers data-quality checks on raw shipping data, a layered DuckDB warehouse, a booking-time delay-risk model, a production-style REST API over all of it, and a tool-calling GenAI assistant on top.
 
-**Stack:** Python 3.12 · **FastAPI** + Uvicorn · DuckDB · scikit-learn · **Claude (Anthropic API)** · pytest · Ruff · Docker / Docker Compose · GitHub Actions + GHCR
+**Stack:** Python 3.12 · **FastAPI** + Uvicorn · DuckDB · scikit-learn · **OpenAI API (GPT-5.6 Luna)** · pytest · Ruff · Docker / Docker Compose · GitHub Actions + GHCR
 
 > **Status: all three parts of the brief are delivered.**
 > - **Part 1:** API, tests, containers, CI/CD (Option A) and runbook.
 > - **Part 2:** standalone DQ checks, tech choices, and a layered, idempotent, contract-validated pipeline.
-> - **Part 3:** a leakage-free delay model with honest evaluation and a monitoring job, and a tool-calling Claude assistant with guardrails and full LLM logging.
+> - **Part 3:** a leakage-free delay model with honest evaluation and a monitoring job, and a tool-calling OpenAI assistant with guardrails and full LLM logging.
 >
 > All eight required README sections are present: [Getting started](#getting-started), [Architecture diagram](#architecture-diagram), [Tech choices](#tech-choices), [Data quality summary](#data-quality-summary), [Production support runbook](#production-support-runbook), [CI/CD](#cicd), [If I had more time](#if-i-had-more-time) and [Scaling to production](#scaling-to-production).
 
@@ -46,10 +46,10 @@ make docker-test     # = docker compose --profile test run --rm integration-test
 python3.12 -m venv .venv && source .venv/bin/activate
 make install         # runtime + dev deps
 make run             # DQ checks -> pipeline -> API on :8000
-make test            # 246 tests (+4 live-LLM tests, skipped without a key): unit + integration, with coverage
+make test            # 254 tests (+4 live-LLM tests, skipped without a key): unit + integration, with coverage
 
-# GenAI assistant (needs the API running and an Anthropic key)
-export ANTHROPIC_API_KEY=sk-ant-...
+# GenAI assistant (needs the API running and an OpenAI key)
+export OPENAI_API_KEY=sk-...
 make assistant       # interactive; or: python -m assistant ask "..." · make assistant-demo
 ```
 
@@ -105,7 +105,7 @@ flowchart LR
     subgraph GENAI["GenAI assistant (python -m assistant)"]
         direction TB
         CLI[CLI] --> AG["Agent loop<br/>guardrails: input · scope · budgets · grounding"]
-        AG <--> LLM[["Claude Haiku 5.5<br/>(Anthropic API, tool use)"]]
+        AG <--> LLM[["GPT-5.6 Luna<br/>(OpenAI Chat Completions,<br/>function calling)"]]
         AG --> TR["Tool registry<br/>query_shipments · get_route_stats<br/>rank_routes · predict_delay"]
         AG --> LOG[(logs/assistant/*.jsonl<br/>every LLM + tool call)]
     end
@@ -241,7 +241,7 @@ assistant/                   GenAI assistant
   agent.py                   LLM ⇄ tools loop with guardrails
   tools.py                   4 validated, read-only tools over the API (source ids for citations)
   guardrails.py              input · scope · budget · grounding checks
-  llm.py                     LLMClient protocol + Anthropic adapter
+  llm.py                     LLMClient protocol + OpenAI adapter (canonical ⇄ Chat Completions)
   prompts.py / pricing.py    system prompt (ports + data coverage) · cost per call
   observability.py           JSONL log of every LLM call, tool call, guardrail event, turn
 shared/                      domain rules used by all of the above (on-time threshold, canonical values)
@@ -259,7 +259,7 @@ tests/integration/           real HTTP against a real running service + pipeline
 | **Registry** | `dq/checks.py` `@register` | Adding a DQ check is one decorated function. The runner, report and API pick it up automatically. |
 | **Single source of truth for domain rules** | `shared/reference.py` | The 24-hour on-time rule and the canonical statuses and cargo types are shared by DQ, SQL, ML and API. The pipeline loads them into `ref.*` tables. |
 | **Graceful degradation** | lifespan + `/health` | A missing model or DB doesn't crash-loop the pod. `/health` returns 503 naming the broken dependency, and only the affected endpoints return 503. |
-| **Strategy / adapter** | `LLMClient` Protocol, `AnthropicLLM`, `ScriptedLLM` in tests | The agent loop is provider-agnostic, and every guardrail path is tested deterministically without an API key. |
+| **Strategy / adapter** | `LLMClient` Protocol, `OpenAILLM`, `ScriptedLLM` in tests | The agent loop is provider-agnostic, and every guardrail path is tested deterministically without an API key. |
 | **Interface segregation** | `AnalyticsRepository` alongside `ShipmentRepository` | Consumers of rankings and ports (such as the assistant's tools) depend on a small interface. |
 
 ### Notable engineering decisions
@@ -275,9 +275,9 @@ tests/integration/           real HTTP against a real running service + pipeline
 ## Testing
 
 ```bash
-make test-unit          # 203 tests, ~6 s, no infrastructure (the pipeline-rule tests use in-process DuckDB)
-make test-integration   # 43 tests, ~15 s, real HTTP against a real uvicorn process + pipeline/ML on the real files
-pytest -m live_llm      # 4 optional tests against the real Claude API (skipped unless ANTHROPIC_API_KEY is set)
+make test-unit          # 210 tests, ~7 s, no infrastructure (the pipeline-rule tests use in-process DuckDB)
+make test-integration   # 44 tests, ~20 s, real HTTP against a real uvicorn process + pipeline/ML on the real files
+pytest -m live_llm      # 4 optional tests against the real OpenAI API (skipped unless OPENAI_API_KEY is set)
 make docker-test        # same integration suite, run inside compose against the real containers
 make test               # everything + coverage
 ```
@@ -302,7 +302,7 @@ make test               # everything + coverage
   - error rollback;
   - the JSONL log schema;
   - tool argument validation, where no API call happens on bad input;
-  - the Anthropic adapter's request and response mapping;
+  - the OpenAI adapter's message, tool and usage mapping, including parallel tool calls and malformed tool arguments;
   - pricing.
 
 **Integration tests (`tests/integration`)** need a real running service. If `SCI_BASE_URL` is set, they target that URL (for example the compose stack). Otherwise the fixture runs the real DQ checks and pipeline on the raw CSVs into a temp dir, starts `python -m app` as a subprocess on a free port, and waits for `/health` to return 200. Both paths run identical assertions.
@@ -349,7 +349,7 @@ Everything is implemented with **GitHub Actions** in `.github/workflows/`:
 | Workflow | Trigger | Purpose |
 |---|---|---|
 | `ci.yml` | every PR, push to `main`, `v*.*.*` tags, manual | Quality gates, Docker e2e, publish the tested image to GHCR |
-| `llm-eval.yml` | manual (`workflow_dispatch`) | Runs the assistant's live tests against the real Claude API, using the `ANTHROPIC_API_KEY` repository secret. Paid, so it is kept out of regular CI. |
+| `llm-eval.yml` | manual (`workflow_dispatch`) | Runs the assistant's live tests against the real OpenAI API, using the `OPENAI_API_KEY` repository secret. The model and `reasoning_effort` are workflow inputs. Paid, so it is kept out of regular CI. |
 | `data-pipeline.yml` | data or data-code changes, nightly, manual | DQ gate → build, validate and export the warehouse → idempotency proof → data artefacts (see [Running the pipeline on GitHub](#running-the-pipeline-on-github)) |
 | `promote.yml` | manual (`workflow_dispatch`) | Deploy or roll back by pointing an environment tag at an already-published image |
 | `dependabot.yml` | weekly | Dependency PRs for pip, Docker base image and Actions, each going through the full CI |
@@ -550,8 +550,8 @@ docker compose logs --no-log-prefix api | jq -R -s -c '[split("\n")[] | fromjson
 
 | Symptom | Diagnose | Fix |
 |---|---|---|
-| `error: ANTHROPIC_API_KEY is not set` | Configuration | Export the key or add it to `.env`. In Docker: `ANTHROPIC_API_KEY=... docker compose --profile assistant run --rm assistant`. |
-| The answer says "the assistant failed: …" (`status=error`) | `jq -c 'select(.type=="error")' logs/assistant/*.jsonl`. Usually provider rate limits or overload (429 / 529), or network. The SDK already retries twice. | Retry. For persistent 529s, switch model with `--model`. The failed turn is rolled back, so the session continues. |
+| `error: OPENAI_API_KEY is not set` | Configuration | Export the key or add it to `.env`. In Docker: `OPENAI_API_KEY=... docker compose --profile assistant run --rm assistant`. |
+| The answer says "the assistant failed: …" (`status=error`) | `jq -c 'select(.type=="error")' logs/assistant/*.jsonl`. Usually provider rate limits (429), a 5xx from the provider, or network. The SDK already retries twice. | Retry. For persistent errors, switch model with `--model` or point `OPENAI_BASE_URL` at another endpoint. The failed turn is rolled back, so the session continues. |
 | Answers are the "I won't guess" fallback | `jq -c 'select(.type=="guardrail" and .guardrail=="grounding_failed")'` shows the rejected answer and the reason | Usually a tool failed or returned nothing (check the `tool_call` records). If the model keeps omitting citations, review the prompt or switch models in the LLM eval workflow. |
 | Cost spike | `jq -s '[.[]|select(.type=="turn")]|map(.cost_usd)|add'`, grouped by `session_id` | Lower `SCI_ASSISTANT_MAX_TOOL_CALLS_PER_SESSION`, or check for a looping client |
 | Model monitoring says retrain | `python -m ml.monitor --last-days 30` shows the reasons | Retrain with `make train`, review `docs/MODEL_CARD.md`, and ship through the normal PR, CI and promote flow |
@@ -614,7 +614,7 @@ Base alerts on SLOs, and make every alert link to the relevant section of this r
 
 **Secrets management**
 
-- The only secret today is the assistant's `ANTHROPIC_API_KEY`, read from the environment or an uncommitted `.env`, and from a repository secret in the LLM eval workflow. A real database would add credentials.
+- The only secret today is the assistant's `OPENAI_API_KEY`, read from the environment or an uncommitted `.env`, and from a repository secret in the LLM eval workflow. A real database would add credentials.
 - Keep those in a secrets manager such as AWS Secrets Manager, GCP Secret Manager or Vault. Inject them at runtime, never into the image, the Compose file or a committed `.env` file.
 - Rotate them on a schedule.
 - CI already avoids long-lived secrets: GHCR uses the per-run `GITHUB_TOKEN`.
@@ -978,7 +978,7 @@ At 10,000× and beyond, I would move transforms to a cloud warehouse (BigQuery, 
 | DQ engine | **pandas** over raw strings | Row-level boolean masks are readable and unit-testable, and it is independent of the warehouse by design |
 | Transform | **DuckDB SQL** | Set-based, declarative and fast. The same SQL would port to Postgres or a warehouse. |
 | ML | **scikit-learn** (logistic regression) | A well-evaluated simple model beats an opaque one. The artefact is a joblib file with a SHA-256 check. |
-| LLM | **Claude Haiku 5.5** via the Anthropic Messages API with native tool use (Sonnet 5.5 is selectable) | First-class tool calling with `tool_choice` control, prompt caching, and about $0.0007 per question. The task is routing plus phrasing, so a small, fast model is enough. See [GenAI assistant](#genai-assistant). |
+| LLM | **OpenAI GPT-5.6 Luna** via Chat Completions function calling (Terra is selectable). The same adapter works with any OpenAI-compatible endpoint. | Mature function calling with `tool_choice` control, automatic prompt caching, and about $0.001–0.002 per question. The task is routing plus phrasing, so the small tier is enough. See [GenAI assistant](#genai-assistant). |
 | Agent framework | **None**: a ~200-line explicit loop | LangChain-style frameworks hide the exact prompt and tool traffic that the brief asks to log. The explicit loop keeps every guardrail testable. |
 | Tests | **pytest** + **httpx** | Fixtures make the "real service over HTTP" integration tests simple |
 | Lint and format | **Ruff** | Replaces flake8, isort, black and bandit with one fast tool |
@@ -1091,26 +1091,36 @@ I kept logistic regression because it is the simplest servable model. Gradient b
 A CLI assistant that answers questions about the data by **calling tools against the live API**. It never reads the database directly and never answers figures from memory.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...        # or put it in .env
+export OPENAI_API_KEY=sk-...               # or put it in .env
+# optional: OPENAI_BASE_URL=... for Azure OpenAI, OpenRouter, or a local Ollama / vLLM server
 make run                                   # terminal 1: the API on :8000
 python -m assistant                        # terminal 2: interactive
 python -m assistant ask "What is the on-time rate for shipments from Shanghai to Rotterdam?"
 python -m assistant demo                   # the brief's three example questions
-# Docker: ANTHROPIC_API_KEY=... docker compose --profile assistant run --rm assistant
+# Docker: OPENAI_API_KEY=... docker compose --profile assistant run --rm assistant
 ```
 
 ### LLM choice and cost
 
-**Model.** The assistant uses **Claude Haiku 5.5** (`claude-haiku-5-5`) via Anthropic's Messages API with native tool use. You can switch with `--model claude-sonnet-5-5` or `SCI_ASSISTANT_MODEL`. Haiku is the right size for this job: the model routes the question to one or two tools and phrases a short, cited answer. The heavy lifting (SQL, statistics, the ML model) happens behind the tools. Temperature is 0, and the system prompt plus tool schemas are marked for prompt caching.
+**Model.** The assistant uses **OpenAI GPT-5.6 Luna** (`gpt-5.6-luna`) with `reasoning_effort=low`. You can switch with `--model gpt-5.6-terra` or `SCI_ASSISTANT_MODEL`. Luna is the right size for this job: the model routes the question to one or two tools and phrases a short, cited answer. The heavy lifting (SQL, statistics, the ML model) happens behind the tools.
+
+**Request details.**
+
+- `reasoning_effort=low` keeps tool routing fast; reasoning tokens count against `max_completion_tokens`.
+- No `temperature` is sent, because GPT-5.x reasoning models only accept the default.
+- OpenAI caches repeated prompt prefixes automatically, and the system prompt plus tool schemas are identical on every call.
+
+**Why Chat Completions rather than the Responses API.** OpenAI recommends the Responses API for new builds. I chose Chat Completions for two reasons. First, the whole conversation stays client-side, so every prompt is logged verbatim and there is no server-side state to reconcile. Second, the same adapter then works unchanged with any OpenAI-compatible endpoint: Azure OpenAI, OpenRouter, or a **local model via Ollama or vLLM** (`OPENAI_BASE_URL=http://localhost:11434/v1`, `SCI_ASSISTANT_MODEL=llama3.1`, `SCI_ASSISTANT_REASONING_EFFORT=`). Moving to Responses later is a change to one adapter class; the agent, tools, guardrails and logs don't change.
 
 **Rough cost per query.**
 
 - The system prompt and tool schemas are about 7k characters, roughly 2–2.5k tokens.
-- A typical question takes 2 LLM calls (choose a tool, then answer). That is about 5–6k input tokens and about 300 output tokens.
-- At Haiku 5.5 list prices ($0.10 / $0.50 per MTok for prompts up to 100K tokens) that is **about $0.0007 per question, roughly $0.70 per 1,000 questions**.
-- On Sonnet 5.5 ($2 / $10) it is about $0.015 per question.
+- A typical question takes 2 LLM calls (choose a tool, then answer). That is about 5–6k input tokens.
+- Output is about 300 visible tokens plus a few hundred reasoning tokens at `low` effort.
+- At GPT-5.6 Luna list prices ($0.20 input / $0.02 cached input / $1.20 output per MTok) that is **about $0.001–0.002 per question, roughly $1–2 per 1,000 questions**. The low end applies once the repeated prefix is cached.
+- On GPT-5.6 Terra ($2 / $0.20 / $12) it is about $0.015–0.02 per question.
 
-**These are estimates.** The real cost of every turn is computed from the API's token usage and printed by the CLI (`≈$0.0007`). It is also logged per LLM call. Prices live in `assistant/pricing.py` and can be overridden by environment variable.
+**These are estimates.** The real cost of every turn is computed from the API's token usage, including cached-input and cache-write tokens, and printed by the CLI. It is also logged per LLM call. Prices live in `assistant/pricing.py` and can be overridden by environment variable.
 
 ### How a question flows
 
@@ -1118,19 +1128,19 @@ python -m assistant demo                   # the brief's three example questions
 sequenceDiagram
     participant U as User (CLI)
     participant A as Agent loop
-    participant C as Claude
+    participant C as GPT-5.6 Luna (OpenAI)
     participant T as Tool registry
     participant API as FastAPI service
     U->>A: question
     A->>A: input guard (empty / too long)
     A->>C: system prompt (scope, citation rules, port table, data coverage) + history + tool schemas
-    C-->>A: tool_use get_route_stats(CNSHA, NLRTM)
+    C-->>A: tool_calls: get_route_stats(CNSHA, NLRTM)
     A->>A: budget guard (≤ 6 tools / question, ≤ 40 / session)
     A->>T: validate arguments (pydantic, extra=forbid)
     T->>API: GET /routes/CNSHA/NLRTM/stats
     API-->>T: JSON
     T-->>A: result tagged source_id S1 (size-capped)
-    A->>C: tool_result
+    A->>C: role=tool message
     C-->>A: "On-time rate is 75% over 12 completed shipments [S1]."
     A->>A: grounding guard (numbers ⇒ valid [S#] citations)
     A-->>U: answer + sources + tokens + cost
@@ -1180,7 +1190,7 @@ Every interaction is appended to `logs/assistant/assistant-YYYYMMDD.jsonl` as on
 | Record | Contents |
 |---|---|
 | `session_start` | Model, **full system prompt** and its SHA-256, full tool schemas, guardrail limits |
-| `llm_call` | **The prompt sent** (the full message history, system-prompt hash, tools offered, tool_choice), the raw response blocks (text and tool_use), stop reason, token usage including cache reads, cost in USD, latency |
+| `llm_call` | **The exact payload sent to OpenAI** (`provider_payload`: system and conversation messages, function definitions, `tool_choice`, `reasoning_effort`, `max_completion_tokens`), plus the system-prompt hash and tools offered. Also the response as canonical blocks (text and tool calls), finish reason, and token usage (prompt, cached, cache-write, completion and reasoning tokens), cost in USD and latency. |
 | `tool_call` | Tool name, arguments, `ok` flag, `source_id`, **the exact result returned to the model**, truncation flag, latency |
 | `guardrail` | Which guardrail fired (`grounding_failed`, `out_of_scope`, `tool_budget_exceeded`, `input_rejected` and so on), with details including the rejected answer |
 | `turn` | Question, **final answer**, status, cited sources, tools called, totals for LLM calls, tokens and cost, latency |
@@ -1194,9 +1204,10 @@ jq -s '[.[] | select(.type=="turn")] | .[-100:] | map(.cost_usd) | add' logs/ass
 
 ### Testing the assistant without an API key
 
-- **Unit tests** use a scripted fake LLM. They cover the agent loop, every guardrail path, budget enforcement, error rollback, the log schema, tool validation, the Anthropic adapter's request and response mapping (against a fake SDK) and pricing.
+- **Unit tests** use a scripted fake LLM. They cover the agent loop, every guardrail path, budget enforcement, error rollback, the log schema, tool validation, the OpenAI adapter's message, tool and usage mapping (against a fake SDK), and pricing including cached input.
+- **Wire test** (`tests/integration/test_openai_wire.py`) runs the **real `openai` SDK** against a local OpenAI-compatible stub server, for a full turn with a tool call against the live data API. It proves the request serialises through the actual SDK (path, auth header, `tools`, `tool_choice`, `reasoning_effort`, and the `assistant` → `tool` message replay), and that real SDK response objects, including cached-token usage, parse back correctly.
 - **Integration tests** (`tests/integration/test_assistant_e2e.py`) drive the assistant against the **real running API** with a scripted LLM. They cover the brief's three questions, the unknown-shipment error path, and the complete JSONL log.
-- **Live tests** (`pytest -m live_llm`) ask the real Claude API the three questions plus an off-domain one. They are skipped unless `ANTHROPIC_API_KEY` is set. On GitHub, they run from the manual **LLM eval** workflow using a repository secret, so regular CI stays free and deterministic.
+- **Live tests** (`pytest -m live_llm`) ask the real OpenAI API the three questions plus an off-domain one. They are skipped unless `OPENAI_API_KEY` is set. On GitHub, they run from the manual **LLM eval** workflow using a repository secret, so regular CI stays free and deterministic.
 
 ---
 
@@ -1215,7 +1226,7 @@ I would put a small point-in-time **feature store** in front of these, so histor
 
 - Build a golden set of 50–100 questions with expected tool calls and expected numbers, scored automatically in the LLM eval workflow: tool-selection accuracy, answer-contains-correct-figure, citation validity, refusal precision and recall.
 - Track cost and latency per model.
-- A/B Haiku against Sonnet on that set before changing the default.
+- A/B Luna against Terra, and against a local model through the same adapter, on that set before changing the default.
 - Add streaming output to the CLI, and keep the session history bounded by summarising old turns.
 
 **Data engineering.**
@@ -1269,7 +1280,7 @@ The API code barely changes, because services depend on repository Protocols: on
 - Put it behind an authenticated service rather than a CLI, with per-user rate limits and budgets. The guardrail counters move from per-session to per-tenant.
 - Ship the JSONL logs to the central log store, and redact PII before they leave the service.
 - Add response caching for repeated questions.
-- Add model fallback (Haiku first, Sonnet only on low-confidence or failed grounding) and a provider circuit breaker.
+- Add model fallback (Luna first, Terra only on low-confidence or failed grounding) and a provider circuit breaker.
 - Treat the golden-set evaluation as a release gate for prompt or model changes.
 
 **Decisions I would revisit.**

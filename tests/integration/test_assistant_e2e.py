@@ -18,7 +18,7 @@ from tests.fakes import ScriptedLLM, last_tool_result, text, tool_use
 
 @pytest.fixture
 def settings(base_url, tmp_path):
-    return AssistantSettings(api_url=base_url, log_dir=tmp_path / "logs", anthropic_api_key="unused")
+    return AssistantSettings(api_url=base_url, log_dir=tmp_path / "logs", openai_api_key="unused")
 
 
 def bot_with(settings, script):

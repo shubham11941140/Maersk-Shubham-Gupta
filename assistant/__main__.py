@@ -3,7 +3,7 @@
 python -m assistant                                   # interactive session (type 'exit' to quit)
 python -m assistant ask "Which routes had the highest average delay this quarter?"
 python -m assistant demo                              # the three example questions from the brief
-python -m assistant --model claude-sonnet-5-5 ask "..."
+python -m assistant --model gpt-5.6-terra ask "..."
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def render(answer: Answer, verbose: bool = True) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m assistant", description="Supply Chain Intelligence assistant")
-    parser.add_argument("--model", help="Override SCI_ASSISTANT_MODEL")
+    parser.add_argument("--model", help="Override SCI_ASSISTANT_MODEL (default gpt-5.6-luna)")
     parser.add_argument("--api-url", help="Override SCI_ASSISTANT_API_URL")
     parser.add_argument("--quiet", action="store_true", help="Answer only, no sources / cost footer")
     sub = parser.add_subparsers(dest="command")

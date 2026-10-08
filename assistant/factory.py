@@ -7,7 +7,7 @@ import uuid
 from assistant.agent import Assistant
 from assistant.api_client import SupplyChainApi
 from assistant.config import AssistantSettings
-from assistant.llm import AnthropicLLM, LLMClient
+from assistant.llm import LLMClient, OpenAILLM
 from assistant.observability import InteractionLogger
 from assistant.prompts import build_system_prompt
 from assistant.tools import ToolRegistry
@@ -28,14 +28,15 @@ def build_assistant(
 ) -> Assistant:
     api = api or SupplyChainApi(settings.api_url, settings.api_timeout_s)
     if llm is None:
-        if not settings.anthropic_api_key:
-            raise AssistantConfigError("ANTHROPIC_API_KEY is not set. Export it (or put it in .env) and retry.")
-        llm = AnthropicLLM(
-            settings.anthropic_api_key,
-            settings.model,
-            settings.max_tokens,
-            settings.temperature,
-            settings.request_timeout_s,
+        if not settings.openai_api_key:
+            raise AssistantConfigError("OPENAI_API_KEY is not set. Export it (or put it in .env) and retry.")
+        llm = OpenAILLM(
+            api_key=settings.openai_api_key,
+            model=settings.model,
+            max_tokens=settings.max_tokens,
+            reasoning_effort=settings.reasoning_effort,
+            base_url=settings.openai_base_url,
+            timeout_s=settings.request_timeout_s,
         )
     data_from, data_to = data_coverage(api)
     system = build_system_prompt(api.ports(), data_from, data_to)

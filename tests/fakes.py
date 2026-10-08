@@ -166,7 +166,7 @@ def text(value: str) -> dict[str, Any]:
 class ScriptedLLM:
     """Replays a fixed list of responses (or callables(messages) -> blocks) and records every request."""
 
-    def __init__(self, script: list[Any], model: str = "claude-haiku-5-5") -> None:
+    def __init__(self, script: list[Any], model: str = "gpt-5.6-luna") -> None:
         from assistant.llm import LLMResponse, Usage  # local import: tests/fakes is imported by API tests too
 
         self._LLMResponse, self._Usage = LLMResponse, Usage

@@ -34,7 +34,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "unit: fast, no infrastructure (auto-applied to tests/unit)",
     "integration: real HTTP against a running service (auto-applied to tests/integration)",
-    "live_llm: calls the real Anthropic API; skipped unless ANTHROPIC_API_KEY is set",
+    "live_llm: calls the real OpenAI API; skipped unless OPENAI_API_KEY is set",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",

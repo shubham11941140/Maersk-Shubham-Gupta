@@ -4,7 +4,7 @@
 #   api                 : starts only after the pipeline completed successfully
 #   integration-tests   : (profile "test") runs the e2e suite against http://api:8000
 #   assistant           : (profile "assistant") interactive GenAI CLI against http://api:8000
-#                         ANTHROPIC_API_KEY=... docker compose --profile assistant run --rm assistant
+#                         OPENAI_API_KEY=... docker compose --profile assistant run --rm assistant
 
 name: supply-chain-intel
 
@@ -61,8 +61,10 @@ services:
     stdin_open: true
     tty: true
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      SCI_ASSISTANT_MODEL: ${SCI_ASSISTANT_MODEL:-claude-haiku-5-5}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      SCI_ASSISTANT_MODEL: ${SCI_ASSISTANT_MODEL:-gpt-5.6-luna}
+      SCI_ASSISTANT_REASONING_EFFORT: ${SCI_ASSISTANT_REASONING_EFFORT:-low}
       SCI_ASSISTANT_API_URL: http://api:8000
       SCI_ASSISTANT_LOG_DIR: /var/lib/sci/logs/assistant
     volumes:

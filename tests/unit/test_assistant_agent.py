@@ -13,7 +13,7 @@ from tests.fakes import FakeSupplyChainApi, ScriptedLLM, last_tool_result, text,
 
 @pytest.fixture
 def settings(tmp_path):
-    return AssistantSettings(log_dir=tmp_path / "logs", max_tool_calls_per_question=3, anthropic_api_key="x")
+    return AssistantSettings(log_dir=tmp_path / "logs", max_tool_calls_per_question=3, openai_api_key="x")
 
 
 def make(settings, script, api=None):
@@ -42,7 +42,7 @@ def test_tool_call_then_grounded_answer(settings):
     assert ans.text == "The on-time rate is 75% [S1]."
     assert (ans.tool_calls, ans.llm_calls) == (1, 2)
     assert [s.source_id for s in ans.sources] == ["S1"]
-    assert ans.cost_usd == pytest.approx(2 * (1000 * 0.10 + 100 * 0.50) / 1e6)
+    assert ans.cost_usd == pytest.approx(2 * (1000 * 0.20 + 100 * 1.20) / 1e6)  # gpt-5.6-luna list prices
     # second request carried the tool_result back to the model
     tool_msg = llm.requests[1]["messages"][-1]
     assert tool_msg["role"] == "user"
@@ -154,3 +154,19 @@ def test_system_prompt_contents():
     assert "OUT_OF_SCOPE:" in prompt
     assert "[S1]" in prompt
     assert "2025-Q4 (partial)" in prompt
+
+
+def test_exact_provider_payload_is_logged_when_available(settings):
+    class PayloadLLM(ScriptedLLM):
+        def create(self, system, messages, tools, allow_tools=True):
+            resp = super().create(system, messages, tools, allow_tools)
+            resp.request = {"model": self.model, "messages": [{"role": "system", "content": system}]}
+            return resp
+
+    api = FakeSupplyChainApi()
+    llm = PayloadLLM([[text("Hello, nothing numeric here.")]])
+    system = build_system_prompt(api.ports(), "2024-Q2", "2025-Q4 (partial)")
+    Assistant(llm, ToolRegistry(api), system, settings, InteractionLogger(settings.log_dir, "s")).ask("hi")
+    call = next(r for r in records(settings) if r["type"] == "llm_call")
+    assert call["request"]["provider_payload"]["model"] == "gpt-5.6-luna"
+    assert "messages" not in call["request"]

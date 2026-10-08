@@ -1,7 +1,7 @@
-"""Optional: the brief's three questions against the REAL Claude API.
+"""Optional: the brief's three questions against the REAL OpenAI API.
 
-Skipped unless ANTHROPIC_API_KEY is set (it costs money and is non-deterministic), so CI stays
-hermetic. Run with:  ANTHROPIC_API_KEY=... pytest -m live_llm
+Skipped unless OPENAI_API_KEY is set (it costs money and is non-deterministic), so CI stays
+hermetic. Run with:  OPENAI_API_KEY=... pytest -m live_llm
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from assistant.factory import build_assistant
 
 pytestmark = [
     pytest.mark.live_llm,
-    pytest.mark.skipif(not os.getenv("ANTHROPIC_API_KEY"), reason="ANTHROPIC_API_KEY not set"),
+    pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set"),
 ]
 
 

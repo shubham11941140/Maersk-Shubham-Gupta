@@ -32,6 +32,7 @@ class Answer:
     llm_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_input_tokens: int = 0
     cost_usd: float | None = 0.0
     latency_ms: float = 0.0
     guardrail_events: list[str] = field(default_factory=list)
@@ -78,9 +79,14 @@ class Assistant:
         resp = self._llm.create(self._system, self._messages, self._tools.schemas(), allow_tools=allow_tools)
         latency = round((time.perf_counter() - start) * 1000, 1)
         answer.llm_calls += 1
-        answer.input_tokens += resp.usage.input_tokens
-        answer.output_tokens += resp.usage.output_tokens
-        call_cost = cost_usd(self._llm.model, resp.usage.input_tokens, resp.usage.output_tokens)
+        u = resp.usage
+        answer.input_tokens += u.input_tokens
+        answer.output_tokens += u.output_tokens
+        answer.cached_input_tokens += u.cached_input_tokens
+        call_cost = cost_usd(
+            self._llm.model, u.input_tokens, u.output_tokens, u.cached_input_tokens, u.cache_write_tokens
+        )
+        answer.cost_usd = None if call_cost is None or answer.cost_usd is None else answer.cost_usd + call_cost
         self._log.log(
             "llm_call",
             turn_id=answer.turn_id,
@@ -88,9 +94,10 @@ class Assistant:
             model=self._llm.model,
             request={
                 "system_prompt_sha256": sha256(self._system),
-                "messages": self._messages,
                 "tools_offered": self._tools.names(),
                 "tool_choice": "auto" if allow_tools else "none",
+                # the exact provider payload when the adapter exposes it, else the canonical history
+                **({"provider_payload": resp.request} if resp.request else {"messages": self._messages}),
             },
             response={"content": resp.content, "stop_reason": resp.stop_reason, "id": resp.response_id},
             usage=resp.usage.__dict__,
@@ -203,7 +210,8 @@ class Assistant:
 
     def _finish(self, answer: Answer, question: str, started: float) -> Answer:
         answer.latency_ms = round((time.perf_counter() - started) * 1000, 1)
-        answer.cost_usd = cost_usd(self._llm.model, answer.input_tokens, answer.output_tokens)
+        if answer.cost_usd is not None:
+            answer.cost_usd = round(answer.cost_usd, 6)
         cited = sorted(g.check_grounding(answer.text, set(self._sources)).cited)
         self._log.log(
             "turn",
@@ -215,7 +223,11 @@ class Assistant:
             tools_called=[{"source_id": s.source_id, "tool": s.tool, "input": s.input} for s in answer.sources],
             tool_calls=answer.tool_calls,
             llm_calls=answer.llm_calls,
-            usage={"input_tokens": answer.input_tokens, "output_tokens": answer.output_tokens},
+            usage={
+                "input_tokens": answer.input_tokens,
+                "cached_input_tokens": answer.cached_input_tokens,
+                "output_tokens": answer.output_tokens,
+            },
             cost_usd=answer.cost_usd,
             latency_ms=answer.latency_ms,
             guardrail_events=answer.guardrail_events,

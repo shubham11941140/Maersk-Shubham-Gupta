@@ -1,0 +1,17 @@
+# Weekly dependency PRs. Each one goes through the full CI pipeline before merge.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      # scikit-learn/numpy/pandas/joblib must move together with a model retrain.
+      ml-stack:
+        patterns: ["scikit-learn", "numpy", "pandas", "joblib"]
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
