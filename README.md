@@ -291,7 +291,11 @@ The three most likely failures, with symptoms, commands to diagnose, and fixes:
 A. The API never starts because the data pipeline failed. This covers a missing CSV, a crashed data-quality check, a schema change or a full disk. It also covers stale data after re-running the pipeline, which needs an API restart.
 B. /health returns 503 naming one broken part. For example the model failing to load after a scikit-learn upgrade, a missing database or a missing data-quality report. Only the endpoints that need that part fail; the rest keep working.
 C. A spike in errors or slow responses. Ready-made jq commands find all 5xx requests, follow one request by its ID down to the stack trace, and work out the error rate and slowest routes.
+
+
 Rolling back a bad release. It covers when to roll back (clear limits), how (the Promote workflow, or one Compose command with the older image), and how to confirm the old version is really serving. Rolling back the image also rolls back the model and data rules, because they live inside it.
+
+
 What to add before real production: monitoring, alerting, secrets management, security, reliability and on-call practices.
 
 ---
