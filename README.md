@@ -657,6 +657,13 @@ python -m dq --input ./data/raw                                        # or: pyt
 python -m dq --input ./data/raw --baseline dq/baseline.json            # + regression gate (what CI and the container run)
 ```
 
+## Data Quality Checks Result
+
+Run locally with Python and output is saved as **artifacts/dq_report.json**
+
+<img width="1142" height="481" alt="image" src="https://github.com/user-attachments/assets/c134a8c1-729a-4dc7-bcf3-3fc0dbe80242" />
+
+
 ### How it works
 
 - **Raw strings only.** Every file is loaded with `dtype=str` and `keep_default_na=False`, so the checks see exactly what is on disk. Nothing is silently coerced or turned into `NaN`.
@@ -1311,8 +1318,6 @@ The API code barely changes, because services depend on repository Protocols: on
 - **Quarantined shipments.** These are not served by `/shipments/{id}`. They are investigation data, not product data.
 
 ## Where AI helped
-
-> **Edit this section to reflect your own process.**
 
 I used Claude as a pair-programmer for scaffolding, test enumeration and README drafting. The key decisions were mine, and I checked each one against the data:
 
