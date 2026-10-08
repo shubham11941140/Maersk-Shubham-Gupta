@@ -1,0 +1,54 @@
+# One command brings up the whole stack:  docker compose up --build
+#
+#   pipeline (one-shot) : DQ checks on raw CSVs -> build DuckDB warehouse -> exit 0
+#   api                 : starts only after the pipeline completed successfully
+#   integration-tests   : (profile "test") runs the e2e suite against http://api:8000
+
+name: supply-chain-intel
+
+x-app-image: &app-image
+  image: supply-chain-intel:local
+  build:
+    context: .
+    target: runtime
+    args:
+      BUILD_SHA: ${BUILD_SHA:-dev}
+
+services:
+  pipeline:
+    <<: *app-image
+    command: ["sh", "scripts/bootstrap.sh"]
+    volumes:
+      - sci-state:/var/lib/sci
+    healthcheck:
+      disable: true
+    restart: "no"
+
+  api:
+    <<: *app-image
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+    environment:
+      SCI_ENVIRONMENT: ${SCI_ENVIRONMENT:-docker}
+      SCI_LOG_LEVEL: ${SCI_LOG_LEVEL:-INFO}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - sci-state:/var/lib/sci
+    restart: unless-stopped
+
+  integration-tests:
+    image: supply-chain-intel:test
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      SCI_BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  sci-state:

@@ -1,0 +1,41 @@
+[project]
+name = "supply-chain-intel"
+version = "1.0.0"
+description = "Supply Chain Intelligence mini-platform: API, data quality, pipeline, delay model"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = [".venv", "data", "artifacts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "C4", "RUF", "PT"]
+ignore = [
+    "B008",    # FastAPI's Depends() in defaults is idiomatic
+    "RUF001",  # we intentionally use '→' and '–' in strings
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S603", "S108"]
+"ml/train.py" = ["S101"]
+"pipeline/sql.py" = ["S608", "E501"]  # constant SQL, column-aligned for readability
+"app/services/prediction_service.py" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "dq", "ml", "pipeline", "shared", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "unit: fast, no infrastructure (auto-applied to tests/unit)",
+    "integration: real HTTP against a running service (auto-applied to tests/integration)",
+]
+filterwarnings = ["ignore::DeprecationWarning:starlette.*"]
+
+[tool.coverage.run]
+source = ["app", "dq", "ml", "pipeline", "shared"]
+omit = ["*/__main__.py"]

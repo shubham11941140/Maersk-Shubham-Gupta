@@ -1,0 +1,253 @@
+# CI/CD for the Supply Chain Intelligence platform.
+#
+#   PR / push ─┬─ lint ──────────────┐
+#              ├─ data-quality ──────┤
+#              ├─ unit-tests ────────┼─► docker: build → compose e2e → scan → push to GHCR (main / tags only)
+#              └─ integration-tests ─┘
+#
+# All five jobs are required status checks for merging to main.
+# Build once, promote: the image pushed to GHCR is the exact image (same digest)
+# that just passed the compose e2e suite — it is never rebuilt for release.
+# Deploying / rolling back = moving an environment tag (.github/workflows/promote.yml).
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+concurrency:
+  # One run per branch/PR; a newer push cancels the older run (never on main).
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  IMAGE_LOCAL: supply-chain-intel:local
+  IMAGE_TEST: supply-chain-intel:test
+
+jobs:
+  # ------------------------------------------------------------------------- #
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Ruff lint
+        run: ruff check . --output-format=github
+      - name: Ruff format check
+        run: ruff format --check .
+      - name: Compose file is valid
+        run: docker compose config --quiet
+
+  # ------------------------------------------------------------------------- #
+  data-quality:
+    name: Data-quality gate (raw CSVs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      # Exit code 2 = a check crashed (fails the job). Known, handled issues
+      # are reported, not blocking — the pipeline fixes/quarantines them.
+      - name: Run standalone DQ checks
+        run: python -m dq --input data/raw --output dq_report.json
+      - name: Publish DQ summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r = json.load(open("dq_report.json"))
+          s = r["summary"]
+          print(f"### Data quality — {s['checks_failed']} of {s['checks_run']} checks found issues\n")
+          print("| Check | Severity | Rows | % | Action |\n|---|---|---|---|---|")
+          for c in r["checks"]:
+              if c["status"] != "pass":
+                  print(f"| `{c['check_name']}` | {c['severity']} | {c['rows_affected']} | {c['pct_affected']} | {c['action']} |")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dq-report
+          path: dq_report.json
+
+  # ------------------------------------------------------------------------- #
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: pytest -m unit (coverage gate 80%)
+        run: >
+          pytest -m unit
+          --cov --cov-report=term-missing --cov-report=xml:coverage.xml
+          --cov-fail-under=80
+          --junitxml=junit-unit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: |
+            junit-unit.xml
+            coverage.xml
+
+  # ------------------------------------------------------------------------- #
+  integration-tests:
+    name: Integration tests (real HTTP, in-process stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      # Fixture runs DQ + pipeline on the raw CSVs, starts `python -m app` on a free port.
+      - name: pytest -m integration
+        run: pytest -m integration --junitxml=junit-integration.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: junit-integration.xml
+
+  # ------------------------------------------------------------------------- #
+  docker:
+    name: Docker build + compose e2e (+ publish on main/tags)
+    needs: [lint, data-quality, unit-tests, integration-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write   # only used by the push steps, which never run for pull requests
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          load: true
+          tags: ${{ env.IMAGE_LOCAL }}
+          build-args: BUILD_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=sci
+
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          load: true
+          tags: ${{ env.IMAGE_TEST }}
+          build-args: BUILD_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=sci
+          cache-to: type=gha,scope=sci,mode=max   # test stage ⊇ runtime layers
+
+      - name: Start stack (pipeline -> api)
+        run: |
+          docker compose up -d --no-build api
+          python3 scripts/wait_for_http.py http://localhost:8000/health
+
+      - name: Smoke test — deployed build is the one we just built
+        run: |
+          health=$(curl -fsS http://localhost:8000/health)
+          echo "$health" | jq .
+          test "$(echo "$health" | jq -r .status)" = "ok"
+          test "$(echo "$health" | jq -r .build_sha)" = "${{ github.sha }}"
+
+      - name: E2E suite inside compose network
+        run: docker compose --profile test run --rm -T integration-tests
+
+      - name: Container logs
+        if: always()
+        run: docker compose --profile test logs --no-color > compose-logs.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compose-logs
+          path: compose-logs.txt
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile test down -v
+
+      # Informational: reports fixable HIGH/CRITICAL CVEs without blocking the build
+      # (base-image CVEs appear upstream without any change from us). See README.
+      - name: Vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_LOCAL }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
+
+      # ---- publish: promote the tested image, never rebuild it ----
+      - name: Image tags
+        if: env.PUBLISH == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,prefix=sha-,format=long
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push tested image
+        if: env.PUBLISH == 'true'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Published (digest-identical to the image that passed e2e)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            docker tag "$IMAGE_LOCAL" "$tag"
+            docker push "$tag"
+            echo "$tag" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$TAGS"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

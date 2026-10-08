@@ -1,0 +1,11 @@
+# Runtime dependencies (pinned for reproducible builds; the model artefact is
+# tied to the scikit-learn version below — bump both together and retrain).
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic==2.11.4
+pydantic-settings==2.9.1
+duckdb==1.2.2
+pandas==2.2.3
+numpy==2.2.5
+scikit-learn==1.6.1
+joblib==1.4.2

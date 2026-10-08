@@ -1,0 +1,198 @@
+{
+  "model_name": "delay_risk_logreg",
+  "model_version": "20261008131210",
+  "trained_at": "2026-10-08T13:12:10+00:00",
+  "sklearn_version": "1.6.1",
+  "artifact_sha256": "c43ed055e257c00646b8e6f64b75ba26cc7ea795c742b39f58ae9e347a3b6592",
+  "target": "actual_delay_hours > 24",
+  "decision_threshold": 0.5,
+  "feature_columns": [
+    "origin_port",
+    "destination_port",
+    "cargo_type",
+    "origin_region",
+    "destination_region",
+    "region_lane",
+    "container_count",
+    "weight_tons",
+    "booking_lead_days",
+    "transit_days_planned",
+    "origin_congestion",
+    "destination_congestion",
+    "departure_month",
+    "departure_dayofweek",
+    "booking_dayofweek"
+  ],
+  "categorical_features": [
+    "origin_port",
+    "destination_port",
+    "cargo_type",
+    "origin_region",
+    "destination_region",
+    "region_lane"
+  ],
+  "numeric_features": [
+    "container_count",
+    "weight_tons",
+    "booking_lead_days",
+    "transit_days_planned",
+    "origin_congestion",
+    "destination_congestion",
+    "departure_month",
+    "departure_dayofweek",
+    "booking_dayofweek"
+  ],
+  "split": {
+    "method": "temporal by booking_date (70/15/15)",
+    "train_rows": 3194,
+    "val_rows": 685,
+    "test_rows": 685,
+    "test_booking_date_from": "2025-08-04 10:00:00"
+  },
+  "metrics": {
+    "validation": {
+      "precision": 0.3896,
+      "recall": 0.4635,
+      "f1": 0.4233,
+      "roc_auc": 0.4848,
+      "pr_auc": 0.3822,
+      "brier": 0.256,
+      "positive_rate_true": 0.4,
+      "positive_rate_pred": 0.4759
+    },
+    "test": {
+      "precision": 0.3709,
+      "recall": 0.4118,
+      "f1": 0.3902,
+      "roc_auc": 0.4807,
+      "pr_auc": 0.402,
+      "brier": 0.2541,
+      "positive_rate_true": 0.3971,
+      "positive_rate_pred": 0.4409
+    },
+    "test_baselines": {
+      "always_predict_delayed": {
+        "precision": 0.3971,
+        "recall": 1.0,
+        "f1": 0.5684,
+        "roc_auc": 0.5,
+        "pr_auc": 0.3971,
+        "brier": 0.6029,
+        "positive_rate_true": 0.3971,
+        "positive_rate_pred": 1.0
+      },
+      "train_base_rate_constant": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "roc_auc": 0.5,
+        "pr_auc": 0.3971,
+        "brier": 0.2395,
+        "positive_rate_true": 0.3971,
+        "positive_rate_pred": 0.0
+      }
+    }
+  },
+  "ports": {
+    "ESVLC": {
+      "region": "EUR",
+      "congestion": 0.58
+    },
+    "THBKK": {
+      "region": "APAC",
+      "congestion": 0.6
+    },
+    "PKKAR": {
+      "region": "APAC",
+      "congestion": 0.73
+    },
+    "JPYOK": {
+      "region": "APAC",
+      "congestion": 0.55
+    },
+    "USLAX": {
+      "region": "AMER",
+      "congestion": 0.82
+    },
+    "USNYC": {
+      "region": "AMER",
+      "congestion": 0.68
+    },
+    "INMUN": {
+      "region": "APAC",
+      "congestion": 0.68
+    },
+    "GBFXT": {
+      "region": "EUR",
+      "congestion": 0.66
+    },
+    "AEDXB": {
+      "region": "MEA",
+      "congestion": 0.62
+    },
+    "MYPKG": {
+      "region": "APAC",
+      "congestion": 0.67
+    },
+    "USLGB": {
+      "region": "AMER",
+      "congestion": 0.8
+    },
+    "ZADUR": {
+      "region": "MEA",
+      "congestion": 0.55
+    },
+    "BEANR": {
+      "region": "EUR",
+      "congestion": 0.7
+    },
+    "INNSA": {
+      "region": "APAC",
+      "congestion": 0.75
+    },
+    "CNNGB": {
+      "region": "APAC",
+      "congestion": 0.7
+    },
+    "CNSHA": {
+      "region": "APAC",
+      "congestion": 0.85
+    },
+    "CNSZX": {
+      "region": "APAC",
+      "congestion": 0.78
+    },
+    "EGPSD": {
+      "region": "MEA",
+      "congestion": 0.68
+    },
+    "KRPUS": {
+      "region": "APAC",
+      "congestion": 0.6
+    },
+    "BRSSZ": {
+      "region": "AMER",
+      "congestion": 0.72
+    },
+    "DEHAM": {
+      "region": "EUR",
+      "congestion": 0.72
+    },
+    "NLRTM": {
+      "region": "EUR",
+      "congestion": 0.8
+    },
+    "SGSIN": {
+      "region": "APAC",
+      "congestion": 0.72
+    },
+    "HKHKG": {
+      "region": "APAC",
+      "congestion": 0.65
+    },
+    "USSAV": {
+      "region": "AMER",
+      "congestion": 0.6
+    }
+  }
+}

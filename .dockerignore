@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+data/warehouse
+artifacts/dq_report.json
+*.tmp
+.env
+README.md
