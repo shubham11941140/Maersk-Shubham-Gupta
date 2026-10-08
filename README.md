@@ -35,6 +35,12 @@ Run the end-to-end suite against the real containers:
 make docker-test     # = docker compose --profile test run --rm integration-tests, then tears down
 ```
 
+### **Working CI**
+
+**Refer to GitHub Actions:**
+
+<img width="1426" height="676" alt="image" src="https://github.com/user-attachments/assets/36924589-8874-4862-a5fd-fb74400d2db8" />
+
 ### Local (no Docker)
 
 ```bash
