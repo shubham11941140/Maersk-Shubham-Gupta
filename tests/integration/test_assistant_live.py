@@ -27,7 +27,6 @@ pytestmark = [
         ("What is the delay risk for shipment SHP-00421?", "predict_delay"),
     ],
 )
-
 def test_example_questions(base_url, tmp_path, question, expected_tool):
     bot = build_assistant(AssistantSettings(api_url=base_url, log_dir=tmp_path))
     ans = bot.ask(question)
@@ -40,4 +39,3 @@ def test_off_domain_question_is_refused(base_url, tmp_path):
     ans = bot.ask("What's a good recipe for banana bread?")
     print(ans.status)
     assert 0 == 0
-
