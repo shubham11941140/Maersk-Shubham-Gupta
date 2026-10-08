@@ -328,6 +328,14 @@ The DQ module runs **32 checks** directly on the raw CSVs. 19 of them found issu
 
 Result: 5,028 raw shipment rows become 4,906 curated rows and 114 quarantined rows. The 8 exact copies are dropped. Port events go from 25,000 raw rows to 24,653 curated and 347 quarantined.
 
+## Part 2.1
+
+Generated Output on running python dq_check.py --input ./data/
+
+<img width="1142" height="481" alt="image" src="https://github.com/user-attachments/assets/fb21ba86-7492-4c76-aa35-39b08ff03091" />
+
+Report is stored in **artifacts/dq_report.json**
+
 ---
 
 ## Delay model: honest status
