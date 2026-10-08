@@ -14,6 +14,7 @@ import pandas as pd
 from dq import checks as _checks  # noqa: F401  (import registers the checks)
 from dq.checks import REGISTRY
 from dq.models import Check, CheckResult, RawData
+from dq.profile import profile_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ def run_check(check: Check, data: RawData) -> CheckResult:
             check_name=check.name,
             dataset=check.dataset,
             description=check.description,
+            detection=check.detection,
             severity=check.severity,
             action=check.action,
             rationale=check.rationale,
@@ -56,6 +58,7 @@ def run_check(check: Check, data: RawData) -> CheckResult:
             check_name=check.name,
             dataset=check.dataset,
             description=check.description,
+            detection=check.detection,
             severity=check.severity,
             action=check.action,
             rationale=check.rationale,
@@ -73,11 +76,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build_report(input_dir: Path, checks: list[Check] | None = None) -> dict:
+def build_report(input_dir: Path, checks: list[Check] | None = None, include_profile: bool = True) -> dict:
     data = load_raw(input_dir)
     results = [run_check(c, data) for c in (checks or REGISTRY)]
     failed = [r for r in results if r.status == "fail"]
-    return {
+    report = {
         "report_version": REPORT_VERSION,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "input_files": {
@@ -90,9 +93,15 @@ def build_report(input_dir: Path, checks: list[Check] | None = None) -> dict:
             "checks_failed": len(failed),
             "checks_errored": sum(r.status == "error" for r in results),
             "failed_by_severity": dict(Counter(r.severity.value for r in failed)),
+            "rows_affected_by_dataset": {
+                name: int(sum(r.rows_affected for r in failed if r.dataset == name)) for name in DATASET_FILES
+            },
         },
         "checks": [r.to_dict() for r in results],
     }
+    if include_profile:
+        report["profile"] = {name: profile_dataset(data.get(name)) for name in DATASET_FILES}
+    return report
 
 
 def write_report(report: dict, output: Path) -> None:

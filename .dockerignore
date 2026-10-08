@@ -9,6 +9,7 @@ venv
 .coverage
 htmlcov
 data/warehouse
+data/export
 artifacts/dq_report.json
 *.tmp
 .env

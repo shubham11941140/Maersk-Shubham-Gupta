@@ -35,7 +35,7 @@ def shipment(**overrides: str) -> dict[str, str]:
         "planned_departure": "2025-01-08 08:00:00",
         "actual_departure": "2025-01-08 10:00:00",
         "planned_arrival": "2025-02-08 08:00:00",
-        "actual_arrival": "2025-02-09 08:00:00",
+        "actual_arrival": "2025-02-09 20:00:00",  # 36h late -> consistent with DELAYED
         "container_count": "12",
         "cargo_type": "Electronics",
         "weight_tons": "950.5",
@@ -193,7 +193,7 @@ def test_run_check_isolates_failures():
     def boom(_):
         raise KeyError("missing_column")
 
-    broken = Check("x.broken", "shipments", "shipment_id", "d", Severity.INFO, Action.NONE, "r", boom)
+    broken = Check("x.broken", "shipments", "shipment_id", "d", "det", Severity.INFO, Action.NONE, "r", boom)
     result = run_check(broken, data())
     assert result.status == "error"
     assert "KeyError" in result.error
@@ -235,3 +235,59 @@ def test_build_and_write_report_roundtrip(tmp_path):
 def test_missing_input_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         build_report(tmp_path)
+
+
+def test_every_check_documents_how_it_was_detected():
+    for check in REGISTRY:
+        assert check.detection.strip(), check.name
+        assert check.rationale.strip(), check.name
+
+
+def test_status_delay_contradiction():
+    raw = data(
+        [
+            shipment(),  # DELAYED, 36h late: consistent
+            shipment(status="DELAYED", actual_arrival="2025-02-08 10:00:00"),  # DELAYED but 2h late
+            shipment(status="DELIVERED"),  # DELIVERED but 36h late
+            shipment(status="DELIVERED", actual_arrival="2025-02-08 10:00:00"),  # consistent
+        ]
+    )
+    assert affected(checks.status_delay_contradiction, raw) == [1, 2]
+
+
+def test_planned_transit_outlier_needs_enough_route_samples():
+    normal = [shipment(shipment_id=f"SHP-0000{i}") for i in range(5)]  # 31-day transit
+    outlier = shipment(shipment_id="SHP-00009", planned_arrival="2025-04-30 08:00:00")  # ~112 days
+    assert affected(checks.planned_transit_outlier_for_route, data([*normal, outlier])) == [5]
+    assert affected(checks.planned_transit_outlier_for_route, data([normal[0], outlier])) == []
+
+
+def test_port_timezone_format():
+    ports = PORTS.copy()
+    ports.loc[1, "timezone"] = "CET"
+    assert affected(checks.invalid_timezone_format, data(ports=ports)) == [1]
+
+
+def test_events_out_of_order_and_notes_contradiction():
+    raw = data(
+        events=[
+            event(event_timestamp="2025-01-02 00:00:00"),
+            event(event_id="EVT-000002", event_timestamp="2025-01-01 00:00:00", delay_minutes="15"),
+        ]
+    )
+    assert affected(checks.events_out_of_order, raw) == [1]
+    assert affected(checks.notes_contradict_delay, raw) == [1]
+
+
+def test_report_contains_profile_and_detection(tmp_path):
+    raw = data([shipment(), shipment(weight_tons="-1")])
+    raw.ports.to_csv(tmp_path / "ports.csv", index=False)
+    raw.shipments.to_csv(tmp_path / "shipments.csv", index=False)
+    raw.port_events.to_csv(tmp_path / "port_events.csv", index=False)
+    report = build_report(tmp_path)
+    weight = report["profile"]["shipments"]["column_profiles"]["weight_tons"]
+    assert weight["inferred_type"] == "numeric"
+    assert weight["min"] == -1.0
+    assert all(c["detection"] for c in report["checks"])
+    assert report["summary"]["rows_affected_by_dataset"]["shipments"] >= 1
+    assert build_report(tmp_path, include_profile=False).get("profile") is None

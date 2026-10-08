@@ -1,11 +1,13 @@
-PY ?= python3
+PY ?= python
 RAW ?= data/raw
 DB ?= data/warehouse/supply_chain.duckdb
 DQ_REPORT ?= artifacts/dq_report.json
+DQ_BASELINE ?= dq/baseline.json
+EXPORT ?= data/export
 
 .DEFAULT_GOAL := help
-.PHONY: help install dq pipeline data train run test test-unit test-integration lint format \
-        docker-up docker-down docker-logs docker-test clean
+.PHONY: help install dq dq-baseline dq-docs pipeline pipeline-check export data train run test test-unit test-integration lint format \
+        docker-up docker-down docker-logs docker-test ci smoke clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -13,11 +15,27 @@ help: ## Show available targets
 install: ## Install runtime + dev dependencies
 	$(PY) -m pip install -r requirements-dev.txt
 
-dq: ## Run standalone data-quality checks on the raw CSVs
-	$(PY) -m dq --input $(RAW) --output $(DQ_REPORT)
+dq: ## Standalone DQ checks on the raw CSVs + regression gate vs dq/baseline.json
+	$(PY) -m dq --input $(RAW) --output $(DQ_REPORT) --baseline $(DQ_BASELINE)
 
-pipeline: ## Build the DuckDB warehouse (raw -> curated -> serving)
+dq-baseline: ## Accept the current DQ results as the new baseline (review the diff!)
+	$(PY) -m dq --input $(RAW) --output $(DQ_REPORT) --update-baseline $(DQ_BASELINE)
+
+dq-docs: dq ## Regenerate docs/DATA_QUALITY.md from the latest report
+	$(PY) -m dq.render $(DQ_REPORT) > docs/DATA_QUALITY.md
+
+pipeline: ## Build the DuckDB warehouse (raw -> curated/quarantine -> serving, validated, atomic)
 	$(PY) -m pipeline --input $(RAW) --db $(DB)
+
+pipeline-check: ## Prove idempotency: build twice, fingerprints must match
+	$(PY) -m pipeline --input $(RAW) --db $(DB) > /dev/null
+	@a=$$($(PY) -m pipeline --db $(DB) --fingerprint-only); \
+	$(PY) -m pipeline --input $(RAW) --db $(DB) > /dev/null; \
+	b=$$($(PY) -m pipeline --db $(DB) --fingerprint-only); \
+	echo "run 1: $$a"; echo "run 2: $$b"; test "$$a" = "$$b" && echo "idempotent ✔"
+
+export: pipeline ## Export curated / quarantine / serving relations as Parquet
+	$(PY) -m pipeline --input $(RAW) --db $(DB) --export-parquet $(EXPORT)
 
 data: dq pipeline ## DQ checks + pipeline
 
@@ -56,9 +74,19 @@ docker-logs: ## Tail API logs
 
 docker-test: ## Run the integration suite inside docker compose against the real containers
 	docker compose --profile test build
-	docker compose --profile test run --rm integration-tests; status=$$?; \
+	docker compose --profile test run --rm -T integration-tests; status=$$?; \
 	docker compose --profile test down -v; exit $$status
 
+ci: ## Run the same gates as the CI pipeline (minus Docker) locally
+	ruff check .
+	ruff format --check .
+	$(PY) -m dq --input $(RAW) --output $(DQ_REPORT) --baseline $(DQ_BASELINE)
+	$(PY) -m pytest -m unit --cov --cov-fail-under=80
+	$(PY) -m pytest -m integration
+
+smoke: ## Post-deploy smoke test (BASE_URL=..., EXPECTED_SHA=... optional)
+	$(PY) scripts/smoke_test.py --base-url $${BASE_URL:-http://localhost:8000} $${EXPECTED_SHA:+--expected-sha $$EXPECTED_SHA}
+
 clean: ## Remove local build outputs
-	rm -rf data/warehouse $(DQ_REPORT) .pytest_cache .ruff_cache .coverage htmlcov
+	rm -rf data/warehouse $(EXPORT) $(DQ_REPORT) .pytest_cache .ruff_cache .coverage htmlcov
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

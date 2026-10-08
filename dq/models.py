@@ -46,6 +46,7 @@ class Check:
     dataset: str
     key_column: str
     description: str
+    detection: str
     severity: Severity
     action: Action
     rationale: str
@@ -57,6 +58,7 @@ class CheckResult:
     check_name: str
     dataset: str
     description: str
+    detection: str
     severity: Severity
     action: Action
     rationale: str
@@ -80,6 +82,7 @@ class CheckResult:
             "check_name": self.check_name,
             "dataset": self.dataset,
             "description": self.description,
+            "detection": self.detection,
             "status": self.status,
             "severity": self.severity.value,
             "rows_affected": self.rows_affected,

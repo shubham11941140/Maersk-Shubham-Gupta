@@ -1,9 +1,12 @@
 """Orchestrates the layered build.
 
+    raw (exact copy, VARCHAR + lineage) → ref (reference tables from shared/reference.py)
+      → curated (+ quarantine) → serving (views) → data-contract validation → atomic swap
+
 Idempotency strategy: the whole warehouse is rebuilt into a temporary file and
 atomically swapped into place with ``os.replace``. Running twice produces the
-same tables, never duplicates, and a failed run leaves the previous warehouse
-untouched.
+same tables (identical content fingerprint), never duplicates, and a failed or
+invalid run leaves the previous warehouse untouched.
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from pathlib import Path
 import duckdb
 
 from pipeline import sql
+from pipeline.fingerprint import combine, table_fingerprints, warehouse_fingerprint
+from pipeline.validate import MAX_QUARANTINE_PCT, ValidationResult, assert_valid
 from shared.reference import (
     CANONICAL_CARGO_TYPES,
     CANONICAL_EVENT_TYPES,
@@ -34,7 +39,7 @@ from shared.reference import (
 
 logger = logging.getLogger(__name__)
 
-PIPELINE_VERSION = "1.0.0"
+PIPELINE_VERSION = "1.1.0"
 RAW_FILES = {"ports": "ports.csv", "shipments": "shipments.csv", "port_events": "port_events.csv"}
 
 
@@ -43,6 +48,8 @@ class PipelineResult:
     run_id: str
     db_path: Path
     row_counts: dict[str, int]
+    fingerprint: str
+    validation: list[ValidationResult]
 
 
 def _sha256(path: Path) -> str:
@@ -71,7 +78,7 @@ def _count(con: duckdb.DuckDBPyConnection, table: str) -> int:
     return con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]  # noqa: S608 - internal table names
 
 
-def build_warehouse(input_dir: Path, db_path: Path) -> PipelineResult:
+def build_warehouse(input_dir: Path, db_path: Path, max_quarantine_pct: float = MAX_QUARANTINE_PCT) -> PipelineResult:
     input_dir, db_path = Path(input_dir), Path(db_path)
     run_id = uuid.uuid4().hex
     started_at = datetime.now(UTC).replace(tzinfo=None)
@@ -118,7 +125,26 @@ def build_warehouse(input_dir: Path, db_path: Path) -> PipelineResult:
 
         # serving
         con.execute(sql.SERVING_ROUTE_STATS)
+        con.execute(sql.SERVING_ROUTE_QUARTERLY)
         con.execute(sql.SERVING_PORT_DAILY)
+        con.execute(sql.SERVING_SHIPMENTS_ENRICHED)
+
+        # data contract: raises PipelineValidationError -> tmp file discarded, live warehouse untouched
+        validation = assert_valid(con, max_quarantine_pct)
+        con.execute(
+            "CREATE OR REPLACE TABLE meta.validation_results (rule VARCHAR, description VARCHAR, violations BIGINT)"
+        )
+        con.executemany(
+            "INSERT INTO meta.validation_results VALUES (?, ?, ?)",
+            [(v.rule, v.description, v.violations) for v in validation],
+        )
+        fingerprints = table_fingerprints(con)
+        fingerprint = combine(fingerprints)
+        con.execute("CREATE OR REPLACE TABLE meta.table_fingerprints (relation VARCHAR, row_count BIGINT, md5 VARCHAR)")
+        con.executemany(
+            "INSERT INTO meta.table_fingerprints VALUES (?, ?, ?)",
+            [(rel, v["rows"], v["md5"]) for rel, v in fingerprints.items()],
+        )
 
         row_counts = {
             t: _count(con, t)
@@ -142,6 +168,7 @@ def build_warehouse(input_dir: Path, db_path: Path) -> PipelineResult:
                 PIPELINE_VERSION,
                 json.dumps(row_counts),
                 json.dumps(sources),
+                fingerprint,
             ],
         )
         con.execute("CHECKPOINT")
@@ -153,5 +180,38 @@ def build_warehouse(input_dir: Path, db_path: Path) -> PipelineResult:
     con.close()
 
     os.replace(tmp_path, db_path)  # atomic swap
-    logger.info("pipeline.done run_id=%s row_counts=%s", run_id, json.dumps(row_counts))
-    return PipelineResult(run_id=run_id, db_path=db_path, row_counts=row_counts)
+    logger.info("pipeline.done run_id=%s fingerprint=%s row_counts=%s", run_id, fingerprint, json.dumps(row_counts))
+    return PipelineResult(
+        run_id=run_id, db_path=db_path, row_counts=row_counts, fingerprint=fingerprint, validation=validation
+    )
+
+
+EXPORT_RELATIONS = (
+    "curated.ports",
+    "curated.shipments",
+    "curated.port_events",
+    "quarantine.shipments",
+    "quarantine.port_events",
+    "serving.route_stats",
+    "serving.route_quarterly_stats",
+    "serving.port_daily_activity",
+    "serving.shipments_enriched",
+)
+
+
+def export_parquet(db_path: Path, out_dir: Path) -> list[Path]:
+    """Write curated / quarantine / serving relations as Parquet (for BI tools or a data lake)."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        for rel in EXPORT_RELATIONS:
+            target = out_dir / f"{rel}.parquet"
+            con.execute(f"COPY (SELECT * FROM {rel}) TO '{target}' (FORMAT PARQUET)")  # noqa: S608
+            written.append(target)
+    return written
+
+
+def read_fingerprint(db_path: Path) -> str:
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        return warehouse_fingerprint(con)

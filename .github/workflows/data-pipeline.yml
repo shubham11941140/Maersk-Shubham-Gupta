@@ -1,0 +1,142 @@
+# Data pipeline on GitHub Actions: the same three stages you run locally,
+# as gated jobs, producing downloadable data products.
+#
+#   dq-gate (raw CSVs only)  ─►  build (raw → curated/quarantine → serving, contract-validated)
+#                                  ├─ idempotency proof (2nd run, identical fingerprint)
+#                                  └─ artefacts: warehouse.duckdb · Parquet export · DQ report · run summary
+#
+# Triggers: changes to data or data code, a nightly schedule, or on demand.
+
+name: Data pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "data/raw/**"
+      - "dq/**"
+      - "pipeline/**"
+      - "shared/**"
+      - "requirements.txt"
+      - ".github/workflows/data-pipeline.yml"
+  pull_request:
+    paths:
+      - "data/raw/**"
+      - "dq/**"
+      - "pipeline/**"
+      - "shared/**"
+      - "requirements.txt"
+      - ".github/workflows/data-pipeline.yml"
+  schedule:
+    - cron: "0 3 * * *"   # nightly at 03:00 UTC — in production: after the upstream feed lands
+  workflow_dispatch:
+    inputs:
+      dq_tolerance:
+        description: "Allowed % growth of known DQ issues before the gate fails"
+        default: "10"
+        required: false
+      strict:
+        description: "Also fail on ANY critical DQ issue (not just regressions)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: data-pipeline-${{ github.ref }}
+  cancel-in-progress: false   # never kill a build half-way
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  OUT: out
+
+jobs:
+  # ------------------------------------------------------------------------- #
+  dq-gate:
+    name: 1 · Data-quality gate (raw CSVs, before ingestion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+
+      - name: Run DQ checks against the raw files
+        env:
+          TOLERANCE: ${{ inputs.dq_tolerance || '10' }}
+          STRICT: ${{ inputs.strict && '--fail-on-critical' || '' }}
+        run: |
+          mkdir -p "$OUT"
+          # shellcheck disable=SC2086
+          python -m dq --input data/raw --output "$OUT/dq_report.json" \
+            --baseline dq/baseline.json --tolerance "$TOLERANCE" $STRICT
+
+      - name: DQ summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          r = json.load(open(os.path.join(os.environ["OUT"], "dq_report.json")))
+          s = r["summary"]
+          print(f"### Data quality — {s['checks_failed']} of {s['checks_run']} checks found issues "
+                f"({s['checks_errored']} errored)\n")
+          print("| Check | Severity | Rows | % | Action |\n|---|---|---:|---:|---|")
+          for c in r["checks"]:
+              if c["status"] != "pass":
+                  print(f"| `{c['check_name']}` | {c['severity']} | {c['rows_affected']} | "
+                        f"{c['pct_affected']} | {c['action']} |")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dq-report
+          path: ${{ env.OUT }}/dq_report.json
+          retention-days: 30
+
+  # ------------------------------------------------------------------------- #
+  build:
+    name: 2 · Build warehouse (raw → curated → serving)
+    needs: dq-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+
+      # Fails (exit 1) if any data-contract rule is violated; nothing is published then.
+      - name: Build + validate + export Parquet
+        run: |
+          mkdir -p "$OUT"
+          python -m pipeline --input data/raw --db "$OUT/supply_chain.duckdb" \
+            --export-parquet "$OUT/export" | tee "$OUT/pipeline_run.json"
+
+      - name: Prove idempotency (second run must produce the identical fingerprint)
+        run: |
+          first=$(python -c "import json; print(json.load(open('$OUT/pipeline_run.json'))['fingerprint'])")
+          python -m pipeline --input data/raw --db "$OUT/supply_chain.duckdb" > /dev/null
+          second=$(python -m pipeline --db "$OUT/supply_chain.duckdb" --fingerprint-only)
+          echo "run 1: $first"; echo "run 2: $second"
+          test "$first" = "$second"
+
+      - name: Run summary
+        run: python scripts/pipeline_summary.py "$OUT/supply_chain.duckdb" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warehouse-${{ github.run_number }}
+          path: |
+            ${{ env.OUT }}/supply_chain.duckdb
+            ${{ env.OUT }}/pipeline_run.json
+            ${{ env.OUT }}/export/
+          retention-days: 14

@@ -19,9 +19,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S603", "S108"]
+"tests/**" = ["S101", "S603", "S108", "S608"]
 "ml/train.py" = ["S101"]
 "pipeline/sql.py" = ["S608", "E501"]  # constant SQL, column-aligned for readability
+"pipeline/validate.py" = ["S608", "E501"]  # SQL built only from code constants, never user input
 "app/services/prediction_service.py" = ["S101"]
 
 [tool.ruff.lint.isort]

@@ -66,10 +66,10 @@ jobs:
           cache: pip
           cache-dependency-path: requirements*.txt
       - run: pip install -r requirements.txt
-      # Exit code 2 = a check crashed (fails the job). Known, handled issues
-      # are reported, not blocking — the pipeline fixes/quarantines them.
-      - name: Run standalone DQ checks
-        run: python -m dq --input data/raw --output dq_report.json
+      # Regression gate: fails if a passing check starts failing, a known issue grows
+      # > 10%, or a check crashes. Known, handled issues (in dq/baseline.json) don't block.
+      - name: Run standalone DQ checks + baseline gate
+        run: python -m dq --input data/raw --output dq_report.json --baseline dq/baseline.json
       - name: Publish DQ summary
         if: always()
         run: |
@@ -206,7 +206,7 @@ jobs:
       # Informational: reports fixable HIGH/CRITICAL CVEs without blocking the build
       # (base-image CVEs appear upstream without any change from us). See README.
       - name: Vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ env.IMAGE_LOCAL }}
           severity: HIGH,CRITICAL

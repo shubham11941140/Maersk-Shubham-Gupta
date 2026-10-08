@@ -184,7 +184,8 @@ SELECT
              WHEN status_raw <> canonical_status                              THEN 'status_normalised' END,
         CASE WHEN actual_arrival IS NULL AND canonical_status IS DISTINCT FROM 'CANCELLED'
              THEN 'no_observed_outcome' END
-    ], x -> x IS NOT NULL)                                                   AS dq_flags
+    ], x -> x IS NOT NULL)                                                   AS dq_flags,
+    _row_number                                                              AS _source_row
 FROM derived
 ORDER BY shipment_id
 """
@@ -237,7 +238,8 @@ SELECT
     list_filter([
         CASE WHEN event_id_collision                          THEN 'event_id_collision' END,
         CASE WHEN event_type = 'DELAYED' AND delay_minutes = 0 THEN 'delayed_event_without_delay' END
-    ], x -> x IS NOT NULL) AS dq_flags
+    ], x -> x IS NOT NULL) AS dq_flags,
+    _row_number AS _source_row
 FROM stg_port_events
 WHERE quarantine_reason IS NULL
 ORDER BY event_timestamp, event_key
@@ -277,6 +279,36 @@ FROM curated.port_events
 GROUP BY ALL
 """
 
+SERVING_ROUTE_QUARTERLY = """
+CREATE OR REPLACE VIEW serving.route_quarterly_stats AS
+SELECT
+    origin_port,
+    destination_port,
+    route_key,
+    year(planned_departure)                                 AS year,
+    quarter(planned_departure)                              AS quarter,
+    year(planned_departure) || '-Q' || quarter(planned_departure) AS period,
+    count(*)                                                AS shipment_count,
+    count(actual_delay_hours)                               AS completed_count,
+    avg(actual_delay_hours)                                 AS avg_delay_hours,
+    avg(CASE WHEN on_time_flag THEN 1.0 WHEN NOT on_time_flag THEN 0.0 END) AS on_time_rate
+FROM curated.shipments
+GROUP BY ALL
+"""
+
+SERVING_SHIPMENTS_ENRICHED = """
+CREATE OR REPLACE VIEW serving.shipments_enriched AS
+SELECT
+    s.* EXCLUDE (_source_row),
+    o.port_name AS origin_port_name, o.country AS origin_country, o.region AS origin_region,
+    o.avg_congestion_score AS origin_congestion,
+    d.port_name AS destination_port_name, d.country AS destination_country, d.region AS destination_region,
+    d.avg_congestion_score AS destination_congestion
+FROM curated.shipments AS s
+JOIN curated.ports AS o ON o.port_code = s.origin_port
+JOIN curated.ports AS d ON d.port_code = s.destination_port
+"""
+
 PIPELINE_RUN = """
 CREATE OR REPLACE TABLE meta.pipeline_run AS
 SELECT
@@ -285,5 +317,6 @@ SELECT
     CAST(? AS TIMESTAMP) AS finished_at,
     CAST(? AS VARCHAR)   AS pipeline_version,
     CAST(? AS JSON)      AS row_counts,
-    CAST(? AS JSON)      AS source_files
+    CAST(? AS JSON)      AS source_files,
+    CAST(? AS VARCHAR)   AS content_fingerprint
 """

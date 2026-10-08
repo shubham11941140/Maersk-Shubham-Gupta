@@ -1,1 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
+# Generated at runtime (rebuilt by `make data` / the pipeline container)
+data/warehouse/
+data/export/
+artifacts/dq_report.json
+*.tmp
+
+# Local env
+.env
+.DS_Store
+.idea/
+.vscode/
+
+# CI outputs
+/dq_report.json
+junit-*.xml
+coverage.xml
+compose-logs.txt
