@@ -19,14 +19,14 @@ pytestmark = [
 ]
 
 
-@pytest.mark.parametrize(
-    ("question", "expected_tool"),
-    [
-        ("Which routes have had the highest average delay this quarter?", "rank_routes"),
-        ("What is the on-time rate for shipments from Shanghai to Rotterdam?", "get_route_stats"),
-        ("What is the delay risk for shipment SHP-00421?", "predict_delay"),
-    ],
-)
+# @pytest.mark.parametrize(
+#     ("question", "expected_tool"),
+#     [
+#         ("Which routes have had the highest average delay this quarter?", "rank_routes"),
+#         ("What is the on-time rate for shipments from Shanghai to Rotterdam?", "get_route_stats"),
+#         ("What is the delay risk for shipment SHP-00421?", "predict_delay"),
+#     ],
+# )
 
 # 
 # def test_example_questions(base_url, tmp_path, question, expected_tool):
